@@ -470,8 +470,8 @@ def test_batch_scripts():
                 # внутри блока скобки в echo обязаны быть экранированы ^( ^)
                 if depth > 0:
                     body = s.replace("^(", "").replace("^)", "")
-                    if body.count("(") != body.count(")"):
-                        bad.append(f"{n}: несбалансированные скобки в echo")
+                    if "(" in body or ")" in body:
+                        bad.append(f"{n}: неэкранированные скобки в echo внутри блока: {s}")
                 continue
             depth += s.count("(") - s.count(")")
             if depth < 0:

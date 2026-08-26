@@ -38,16 +38,38 @@ if not defined NO_PS (
     if not errorlevel 1 set "IS_ADMIN=1"
 )
 rem Нет PowerShell -> не повышаемся здесь: tools\calibrate.py повысится сам.
-if not defined NO_PS if not defined IS_ADMIN (
-    echo [cal] Запрашиваю права администратора (UAC) - нажми "Да"...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
-    if errorlevel 1 echo [cal] Повысить права не удалось. Кликни правой кнопкой - "Запуск от имени администратора".
-    exit /b 0
-)
+if not defined NO_PS if not defined IS_ADMIN goto :elevate
+goto :after_elevate
 
-rem --- 2. Ищем Python: портативный -> py -> python -> скачать ------------
+:elevate
+echo [cal] Запрашиваю права администратора (UAC) - нажми "Да"...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
+if errorlevel 1 echo [cal] Повысить права не удалось. Кликни правой кнопкой - "Запуск от имени администратора".
+exit /b 0
+
+:after_elevate
+
+rem --- 2. Ищем Python: портативный -> стабильный -> py -> скачать ---------
 set "PYCMD="
 if exist "%RUNTIME_PY%" set "PYCMD="%RUNTIME_PY%""
+
+if not defined PYCMD (
+    for %%V in (3.12 3.11 3.10 3.9 3.8) do (
+        if not defined PYCMD (
+            py -%%V -c "import sys" >nul 2>&1
+            if not errorlevel 1 set "PYCMD=py -%%V"
+        )
+    )
+)
+if not defined PYCMD (
+    py -3 -c "import sys; assert sys.version_info < (3, 14)" >nul 2>&1
+    if not errorlevel 1 set "PYCMD=py -3"
+)
+if not defined PYCMD (
+    python -c "import sys; assert sys.version_info < (3, 14)" >nul 2>&1
+    if not errorlevel 1 set "PYCMD=python"
+)
+if not defined PYCMD call :bootstrap_python
 if not defined PYCMD (
     py -3 -c "import sys" >nul 2>&1
     if not errorlevel 1 set "PYCMD=py -3"
@@ -56,7 +78,6 @@ if not defined PYCMD (
     python -c "import sys" >nul 2>&1
     if not errorlevel 1 set "PYCMD=python"
 )
-if not defined PYCMD call :bootstrap_python
 if not defined PYCMD goto :no_python
 echo [cal] Python: %PYCMD%
 
@@ -65,6 +86,13 @@ rem --- 3. numpy (нужен для захвата маркера F8) ----------
 if errorlevel 1 (
     echo [cal] numpy не найден - устанавливаю ^(нужен интернет^)...
     %PYCMD% -m pip install --no-warn-script-location numpy
+    %PYCMD% -c "import numpy" >nul 2>&1
+    if errorlevel 1 (
+        echo [cal] pip не сработал - пробую get-pip.py ...
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%TEMP%\get-pip.py'" >nul 2>&1
+        if exist "%TEMP%\get-pip.py" %PYCMD% "%TEMP%\get-pip.py" --no-warn-script-location >nul 2>&1
+        %PYCMD% -m pip install --no-warn-script-location numpy >nul 2>&1
+    )
     %PYCMD% -c "import numpy" >nul 2>&1
     if errorlevel 1 (
         echo [cal] numpy установить не удалось: маркер ^(F8^) не сохранится,
