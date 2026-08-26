@@ -37,6 +37,20 @@ if not exist "%VPY%" (
     if not exist "%VPY%" goto :err
 )
 
+rem В готовом venv может не оказаться pip: создание прервалось, ensurepip
+rem заблокирован антивирусом, или папка осталась от прошлой неудачной попытки.
+"%VPY%" -m pip --version >nul 2>&1
+if not errorlevel 1 goto :pip_ok
+echo [build] в %VENV% нет pip - ставлю через ensurepip ...
+"%VPY%" -m ensurepip --upgrade
+"%VPY%" -m pip --version >nul 2>&1
+if errorlevel 1 (
+    echo [build] ensurepip не сработал. Удали папку %VENV% и запусти заново,
+    echo [build] либо собери без venv: py -3 -m pip install pyinstaller numpy
+    goto :err
+)
+:pip_ok
+
 echo [build] ставлю pyinstaller + numpy ...
 "%VPY%" -m pip install --upgrade pip wheel >nul 2>&1
 "%VPY%" -m pip install numpy pyinstaller
