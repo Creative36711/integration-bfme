@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Сборка exe / портативный Python (создаются скриптами сборки)
+.build/
+.runtime/
+build/
+dist/
+*.spec.bak
+
+# Результаты калибровки и логи (данные пользователя, не код)
+calibrate_log.txt
+config/calibrate_coords.txt
+config/menu_marker.npy
+config/menu_marker.json
