@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Batch-файлы должны попадать на Windows с CRLF (иначе goto/labels капризничают)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PyInstaller-spec исполняется Python'ом — оставляем LF
+*.spec text eol=lf
