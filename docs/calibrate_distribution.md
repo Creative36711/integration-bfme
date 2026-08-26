@@ -13,8 +13,29 @@ numpy он не запустится. Здесь — три способа ра�
 
 ## 1. `calibrate.bat` — двойной клик, Python не нужен
 
-Положи пользователю архив с проектом (достаточно: `calibrate.bat`,
-`tools\`, `bridge\`, `config\`, `main.py`). Он делает двойной клик — дальше bat сам:
+### Готовый архив для раздачи
+
+```bat
+python packaging\make_calibrate_zip.py
+```
+
+→ `dist\CalibratePortable.zip` (~30 КБ, 14 файлов). **Это и есть то, что
+отдаём другому пользователю**: распаковал → двойной клик по
+`Calibrate\calibrate.bat` → «Да» в UAC → работает.
+
+Состав архива не задан списком, а вычисляется: скрипт разбирает импорты
+`tools/calibrate.py` через `ast` и рекурсивно собирает замыкание
+(`bridge/config|elevate|launcher|log|navigate|network_prefs|options_ini`,
+`tools/calibrate|hotkey`, оба `__init__.py`) + `calibrate.bat` +
+`config/config.json` + `README.txt`. Ни `main.py`, ни `menu/room/spawn`, ни
+numpy внутри нет. После упаковки архив проверяется: замыкание импортов
+пересчитывается уже внутри собранной папки, и при нехватке файла сборка
+падает с кодом 1.
+
+### Что делает bat
+
+Положи пользователю архив (достаточно: `calibrate.bat`,
+`tools\`, `bridge\`, `config\`). Он делает двойной клик — дальше bat сам:
 
 1. запрашивает права администратора через UAC (без них UIPI молча выбрасывает
    клики в окно игры);

@@ -37,6 +37,8 @@ integration/
 ├── build_calibrate_exe.bat  # сборка однофайлового dist\Calibrate\Calibrate.exe
 ├── packaging/         # упаковка калибратора
 │   ├── calibrate.spec # PyInstaller-spec (onefile, uac_admin, numpy внутри)
+│   ├── make_calibrate_zip.py  # сборка dist\CalibratePortable.zip (вариант bat)
+│   ├── bat_readme.txt # инструкция внутрь архива с calibrate.bat
 │   └── dist_readme.txt# инструкция, которая кладётся рядом с exe
 ├── tools/             # утилиты разработки (в рантайме не нужны)
 │   ├── calibrate.py   # калибровка: F8 = маркер, F9 = координата
@@ -221,6 +223,17 @@ End
 | **BAT** | двойной клик по `calibrate.bat` | не нужен (bat скачает портативный Python в `.runtime\` и поставит numpy) |
 | **EXE** | двойной клик по `Calibrate.exe` | не нужен (всё внутри exe) |
 | исходники | `python tools\calibrate.py` | нужен 3.8+ и numpy |
+
+Готовый архив для раздачи (вариант BAT):
+
+```bat
+python packaging\make_calibrate_zip.py   ->  dist\CalibratePortable.zip (~30 КБ)
+```
+
+Отдаём этот архив: распаковать → двойной клик по `Calibrate\calibrate.bat` →
+«Да» в UAC. Внутри только то, что нужно калибратору (замыкание импортов
+`tools/calibrate.py` + bat + `config/config.json` + инструкция), после
+упаковки состав архива перепроверяется.
 
 Exe собирается один раз на Windows: `build_calibrate_exe.bat` →
 `dist\Calibrate\Calibrate.exe` + `dist\Calibrate.zip` (его и раздаём).
