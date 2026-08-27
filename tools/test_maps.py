@@ -213,27 +213,29 @@ class TestMaps(unittest.TestCase):
         self.assertEqual(pos[2], dm["attack_positions"][0])
 
     def test_assign_start_positions_order(self):
-        # Check that assign_start_positions iterates in descending slot order
+        # Check that assign_start_positions iterates in ascending slot order (1, 2, 3, ...) with 1 click
         calls = []
         orig_assign = room.assign_start_position
 
-        def mock_assign(slot, pos):
-            calls.append((slot, pos))
+        def mock_assign(slot, pos, clicks=1):
+            calls.append((slot, pos, clicks))
             return True
 
         room.assign_start_position = mock_assign
         try:
             slot_positions = {
-                1: (0.1, 0.1),
-                2: (0.2, 0.2),
                 3: (0.3, 0.3),
+                1: (0.1, 0.1),
                 4: (0.4, 0.4),
+                2: (0.2, 0.2),
             }
             res = room.assign_start_positions(slot_positions)
             self.assertTrue(res)
-            # Must be descending: 4, 3, 2, 1
+            # Must be ascending: 1, 2, 3, 4 with 1 click each
             slots_called = [c[0] for c in calls]
-            self.assertEqual(slots_called, [4, 3, 2, 1])
+            clicks_called = [c[2] for c in calls]
+            self.assertEqual(slots_called, [1, 2, 3, 4])
+            self.assertEqual(clicks_called, [1, 1, 1, 1])
         finally:
             room.assign_start_position = orig_assign
 

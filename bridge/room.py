@@ -240,11 +240,10 @@ def set_slot_color(slot, color, excluded):
 # ===========================================================================
 # Стартовые позиции на карте (оборона / атака)
 # ===========================================================================
-def assign_start_position(slot, frac_pos):
-    """Назначить стартовую позицию слоту: кликнуть точку карты N раз.
+def assign_start_position(slot, frac_pos, clicks=1):
+    """Назначить стартовую позицию слоту: кликнуть точку карты `clicks` раз (по умолчанию 1).
 
-    frac_pos — (fx, fy) доля окна. Механика: 1 клик = слот 1, 2 клика = слот 2,
-    ... N кликов = слот N (игра назначает точку очередному слоту по порядку).
+    frac_pos — (fx, fy) доля окна.
     """
     vp = nav.viewport()
     if not vp:
@@ -253,10 +252,12 @@ def assign_start_position(slot, frac_pos):
     l, t, W, H = vp
     x = l + int(frac_pos[0] * W)
     y = t + int(frac_pos[1] * H)
-    for _ in range(slot):
+    for _ in range(clicks):
         nav.click(x, y)
-        time.sleep(T["start_pos_click"])
-    log(f"[room] стартовая позиция назначена слоту {slot} ({slot} кликов, pos={frac_pos})")
+        if clicks > 1:
+            time.sleep(T["start_pos_click"])
+    time.sleep(T["start_pos_click"])
+    log(f"[room] стартовая позиция назначена слоту {slot} (pos={frac_pos})")
     return True
 
 
@@ -264,13 +265,14 @@ def assign_start_positions(slot_positions):
     """Назначить стартовые позиции слотам на миникарте.
 
     slot_positions — dict {slot: (fx, fy)}.
-    Чтобы назначения не сбивали друг друга при циклических кликах на миникарте,
-    назначаем слоты в порядке УБЫВАНИЯ их номеров (например: 4, 3, 2, 1).
-    Каждый слот N требует N кликов по своей точке на миникарте.
+    Расстановка идёт по возрастанию номеров слотов (1, 2, 3, ...):
+    первый клик назначает слот 1 (игрока), следующий клик на другую точку
+    автоматически назначает следующий свободный слот (слот 2), затем слот 3 и т.д.
+    Каждая позиция кликается ровно 1 раз.
     """
-    for slot in sorted(slot_positions.keys(), reverse=True):
+    for slot in sorted(slot_positions.keys()):
         pos = slot_positions[slot]
-        if not assign_start_position(slot, pos):
+        if not assign_start_position(slot, pos, clicks=1):
             return False
     return True
 
