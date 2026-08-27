@@ -2,7 +2,10 @@
 rem ==========================================================================
 rem  Сборка однофайлового калибратора:  dist\Calibrate\Calibrate.exe
 rem
-rem  Запуск: двойной клик. Нужны Python 3 (только на ЭТОЙ машине) и интернет.
+rem  Запуск: двойной клик. Нужен интернет (для загрузки pyinstaller/numpy).
+rem  Если системный Python отсутствует или сломан, скрипт автоматически
+rem  скачает чистый портативный Python в .runtime\ и соберёт exe.
+rem
 rem  Результат - папка dist\Calibrate\ и архив dist\Calibrate.zip, которые
 rem  можно отдать любому пользователю: Python и numpy ему не понадобятся.
 rem ==========================================================================
@@ -11,85 +14,89 @@ chcp 65001 >nul
 title Сборка Calibrate.exe (PyInstaller)
 cd /d "%~dp0"
 
+set "RUNTIME=%~dp0.runtime\python"
+set "RUNTIME_PY=%RUNTIME%\python.exe"
+set "PY_URLS=https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+
 set "PYCMD="
-if exist ".runtime\python\python.exe" set "PYCMD=".runtime\python\python.exe""
+
+rem 1. Проверяем готовый портативный Python в .runtime\
+if exist "%RUNTIME_PY%" (
+    "%RUNTIME_PY%" -m pip --version >nul 2>&1
+    if not errorlevel 1 (
+        set "PYCMD="%RUNTIME_PY%""
+        echo [build] Использую портативный Python: .runtime\python
+    )
+)
+
+rem 2. Проверяем системный Python (py -3 или python)
+if not defined PYCMD (
+    py -3 -m pip --version >nul 2>&1
+    if not errorlevel 1 (
+        set "PYCMD=py -3"
+        echo [build] Найден системный Python: py -3
+    )
+)
+if not defined PYCMD (
+    python -m pip --version >nul 2>&1
+    if not errorlevel 1 (
+        set "PYCMD=python"
+        echo [build] Найден системный Python: python
+    )
+)
+
+rem 3. Если системный Python есть, но без pip — пробуем ensurepip
 if not defined PYCMD (
     py -3 -c "import sys" >nul 2>&1
-    if not errorlevel 1 set "PYCMD=py -3"
+    if not errorlevel 1 (
+        echo [build] В py -3 нет pip, пробую восстановить ensurepip...
+        py -3 -m ensurepip --default-pip >nul 2>&1
+        py -3 -m pip --version >nul 2>&1
+        if not errorlevel 1 set "PYCMD=py -3"
+    )
 )
 if not defined PYCMD (
     python -c "import sys" >nul 2>&1
-    if not errorlevel 1 set "PYCMD=python"
+    if not errorlevel 1 (
+        echo [build] В python нет pip, пробую восстановить ensurepip...
+        python -m ensurepip --default-pip >nul 2>&1
+        python -m pip --version >nul 2>&1
+        if not errorlevel 1 set "PYCMD=python"
+    )
 )
-if not defined PYCMD (
-    echo [build] Python 3 не найден. Поставь его с https://www.python.org/downloads/
-    echo [build] или сначала запусти calibrate.bat - он скачает портативный Python.
-    pause
-    exit /b 1
-)
-echo [build] Python: %PYCMD%
 
-set "BUILD_PY="
+rem 4. Если Python нет или pip сломан — скачиваем портативный Python в .runtime\
+if not defined PYCMD (
+    echo [build] Системный Python не найден или не имеет рабочего pip.
+    echo [build] Скачиваю чистый портативный Python в .runtime\ ...
+    call :bootstrap_python
+)
+
+if not defined PYCMD (
+    echo.
+    echo [build] ОШИБКА: Не удалось инициализировать Python с pip.
+    goto :err
+)
+
+rem 5. Пробуем создать изолированный venv, если это не embed-python
+set "BUILD_PY=%PYCMD%"
 set "VENV=.build\venv"
 set "VPY=%VENV%\Scripts\python.exe"
 
-rem 1. Проверяем существующий venv
-if exist "%VPY%" (
-    "%VPY%" -m pip --version >nul 2>&1
-    if not errorlevel 1 set "BUILD_PY=%VPY%"
-)
-
-rem 2. Если в venv нет pip, пробуем восстановить ensurepip
-if not defined BUILD_PY if exist "%VPY%" (
-    "%VPY%" -m ensurepip --default-pip >nul 2>&1
-    "%VPY%" -m pip --version >nul 2>&1
-    if not errorlevel 1 set "BUILD_PY=%VPY%"
-)
-
-rem 3. Если venv сломан, удаляем и пересоздаём
-if not defined BUILD_PY (
-    if exist "%VENV%" rmdir /s /q "%VENV%"
-    echo [build] создаю окружение сборки %VENV% ...
-    %PYCMD% -m venv "%VENV%"
+if not exist "%RUNTIME_PY%" (
+    if exist "%VENV%" rmdir /s /q "%VENV%" >nul 2>&1
+    %PYCMD% -m venv "%VENV%" >nul 2>&1
     if exist "%VPY%" (
         "%VPY%" -m pip --version >nul 2>&1
-        if not errorlevel 1 set "BUILD_PY=%VPY%"
-        if not defined BUILD_PY (
-            "%VPY%" -m ensurepip --default-pip >nul 2>&1
-            "%VPY%" -m pip --version >nul 2>&1
-            if not errorlevel 1 set "BUILD_PY=%VPY%"
+        if not errorlevel 1 (
+            set "BUILD_PY="%VPY%""
         )
     )
 )
 
-rem 4. Если venv без pip, используем системный Python
-if not defined BUILD_PY (
-    echo [build] venv не настроил pip, использую Python напрямую ...
-    %PYCMD% -m pip --version >nul 2>&1
-    if errorlevel 1 %PYCMD% -m ensurepip --default-pip >nul 2>&1
-    %PYCMD% -m pip --version >nul 2>&1
-    if not errorlevel 1 set "BUILD_PY=%PYCMD%"
-)
-
-rem 5. Если pip всё ещё нет, скачиваем get-pip.py
-if not defined BUILD_PY (
-    echo [build] пробую установить pip через get-pip.py ...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%TEMP%\get-pip.py'" >nul 2>&1
-    if exist "%TEMP%\get-pip.py" (
-        %PYCMD% "%TEMP%\get-pip.py" --no-warn-script-location >nul 2>&1
-        %PYCMD% -m pip --version >nul 2>&1
-        if not errorlevel 1 set "BUILD_PY=%PYCMD%"
-    )
-)
-
-if not defined BUILD_PY (
-    echo [build] ОШИБКА: pip не найден для %PYCMD%.
-    goto :err
-)
-
 echo [build] ставлю pyinstaller + numpy ...
 %BUILD_PY% -m pip install --upgrade pip wheel >nul 2>&1
-%BUILD_PY% -m pip install numpy pyinstaller
+%BUILD_PY% -m pip install --no-warn-script-location numpy pyinstaller
 if errorlevel 1 (
     echo [build] повторная попытка установки...
     %BUILD_PY% -m pip install numpy pyinstaller
@@ -122,6 +129,24 @@ echo [build] Папку Calibrate можно положить куда угод�
 echo [build] в реестре и в config\config.json, маркеры пишет в config\.
 echo.
 pause
+exit /b 0
+
+:bootstrap_python
+if not exist "%~dp0.runtime" mkdir "%~dp0.runtime"
+set "RT_ZIP=%TEMP%\python-embed-amd64.zip"
+for %%U in (%PY_URLS%) do (
+    if not exist "%RUNTIME_PY%" (
+        echo [build]   качаю %%U ...
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -Uri '%%U' -OutFile '%RT_ZIP%';Expand-Archive -LiteralPath '%RT_ZIP%' -DestinationPath '%RUNTIME%' -Force"
+    )
+)
+if not exist "%RUNTIME_PY%" exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%RUNTIME%' -Filter '*._pth' | ForEach-Object { (Get-Content -LiteralPath $_.FullName) -replace '^\s*#\s*import site','import site' | Set-Content -LiteralPath $_.FullName -Encoding ASCII }"
+echo [build]   ставлю pip...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%TEMP%\get-pip.py'"
+if not exist "%TEMP%\get-pip.py" exit /b 1
+"%RUNTIME_PY%" "%TEMP%\get-pip.py" --no-warn-script-location >nul 2>&1
+set "PYCMD="%RUNTIME_PY%""
 exit /b 0
 
 :err
