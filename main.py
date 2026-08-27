@@ -330,6 +330,7 @@ def main(argv=None):
     ap.add_argument("--exe", help="explicit game/launcher path")
     ap.add_argument("--arg", action="append", dest="args",
                     help="extra launch arg (repeatable)")
+    ap.add_argument("--coords", help="explicit coordinates file path (_coordinates.txt or coordinates.txt)")
     ap.add_argument("--elevated", action="store_true",
                     help="launch through UAC prompt")
     ap.add_argument("--stop-at", choices=["lan", "create"], default="create",
@@ -365,18 +366,32 @@ def main(argv=None):
     total_players = ask_total_players()
     faction = ask_faction()
     bot_factions = ask_bot_factions(total_players)
-    map_key = ask_map()
+
+    # Поиск файла координат (_coordinates.txt / coordinates.txt)
+    coords_file, is_fortress_file = maps.find_coordinates_file(args.coords)
+    if coords_file:
+        map_data = maps.load_map_from_file(coords_file, is_fortress=is_fortress_file)
+        is_fortress = is_fortress_file
+        log(f"[setup] найден файл координат: {coords_file} "
+            + ("(КРЕПОСТЬ)" if is_fortress else "(обычная карта)"))
+        log(f"[setup]   загружено: {len(map_data['defense_positions'])} точек обороны, "
+            f"{len(map_data['attack_positions'])} точек атаки")
+    else:
+        map_key = ask_map()
+        map_data = maps.get_map(map_key)
+        is_fortress = maps.is_fortress_map(map_key)
+
     player_role = ask_player_role()
     position_mode = ask_position_mode()
     random_pos = (position_mode == "random")
 
     fortress_owner = None
-    if maps.is_fortress_map(map_key):
+    if is_fortress:
         def_slots_preview, _ = maps.get_team_slots(player_role, total_players, faction, bot_factions)
         fortress_owner = ask_fortress_owner(def_slots_preview, bot_factions, faction)
 
     slot_positions, def_slots, atk_slots = maps.calculate_slot_positions(
-        map_key, player_role, total_players, faction, bot_factions,
+        map_data, player_role, total_players, faction, bot_factions,
         random_positions=random_pos,
         fortress_owner=fortress_owner)
     army = ask_army(faction)
@@ -390,7 +405,7 @@ def main(argv=None):
     heroes, ring_heroes = ask_heroes(faction)
     handicaps = ask_handicaps(total_players)
     color_name = network_prefs.FACTION_COLORS.get(faction)
-    map_info = maps.MAPS[map_key]
+    map_info = map_data
     role_name = "Защитник (оборона)" if player_role == "defender" else "Атакующий (атака)"
     mode_name = "Случайно" if random_pos else "По приоритету"
     log(f"[setup] фракция={faction}  цвет={color_name}  игроков={total_players}  "

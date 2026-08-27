@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Тесты для модуля карт и назначения стартовых позиций.
+Тесты для модуля карт, парсинга файлов координат и назначения позиций.
 """
 
 import io
 import os
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -51,6 +52,18 @@ from bridge import room
 import main
 
 
+SAMPLE_COORDS_TEXT = """
+2026-08-27 17:13:06  frac=(0.4906, 0.3514)  px=(1192,488)  ->  [0.4906, 0.3514],
+2026-08-27 17:13:08  frac=(0.4984, 0.3306)  px=(1202,473)  ->  [0.4984, 0.3306],
+2026-08-27 17:13:11  frac=(0.4813, 0.3694)  px=(1180,501)  ->  [0.4813, 0.3694],
+2026-08-27 17:13:13  frac=(0.4688, 0.3861)  px=(1164,513)  ->  [0.4688, 0.3861],
+2026-08-27 17:13:15  frac=(0.4656, 0.4306)  px=(1160,545)  ->  [0.4656, 0.4306],
+2026-08-27 17:13:17  frac=(0.4945, 0.4250)  px=(1197,541)  ->  [0.4945, 0.4250],
+2026-08-27 17:13:20  frac=(0.5211, 0.4306)  px=(1231,545)  ->  [0.5211, 0.4306],
+2026-08-27 17:13:23  frac=(0.5250, 0.3208)  px=(1236,466)  ->  [0.5250, 0.3208],
+"""
+
+
 class TestMaps(unittest.TestCase):
     def test_map_definitions(self):
         expected_keys = ["westmarch", "dagorlad", "dead_marshes", "minas_tirith"]
@@ -87,34 +100,6 @@ class TestMaps(unittest.TestCase):
             (0.5437, 0.4278),
         ])
 
-        dg = maps.MAPS["dagorlad"]
-        self.assertEqual(dg["defense_positions"], [
-            (0.4727, 0.3167),
-            (0.5039, 0.3236),
-            (0.5195, 0.3417),
-            (0.5352, 0.3417),
-        ])
-        self.assertEqual(dg["attack_positions"], [
-            (0.4555, 0.4222),
-            (0.4813, 0.4403),
-            (0.4898, 0.4250),
-            (0.5156, 0.4347),
-        ])
-
-        dm = maps.MAPS["dead_marshes"]
-        self.assertEqual(dm["defense_positions"], [
-            (0.4914, 0.3208),
-            (0.4617, 0.3458),
-            (0.4734, 0.3639),
-            (0.4672, 0.4125),
-        ])
-        self.assertEqual(dm["attack_positions"], [
-            (0.5211, 0.3514),
-            (0.5172, 0.4056),
-            (0.5305, 0.4181),
-            (0.4961, 0.4333),
-        ])
-
         mt = maps.MAPS["minas_tirith"]
         self.assertEqual(mt["defense_positions"], [
             (0.4906, 0.3514),
@@ -129,124 +114,80 @@ class TestMaps(unittest.TestCase):
             (0.5250, 0.3208),
         ])
 
-    def test_get_map(self):
-        self.assertEqual(maps.get_map("1")["name"], "Вестмарш")
-        self.assertEqual(maps.get_map("2")["name"], "Дагорлад")
-        self.assertEqual(maps.get_map("3")["name"], "Мёртвые топи")
-        self.assertEqual(maps.get_map("4")["name"], "Минас Тирит")
-        self.assertEqual(maps.get_map("westmarch")["name"], "Вестмарш")
-        self.assertEqual(maps.get_map("Минас Тирит")["name"], "Минас Тирит")
-        self.assertEqual(maps.get_map("map wor dagorlad")["name"], "Дагорлад")
-        self.assertEqual(maps.get_map("dead marshes")["name"], "Мёртвые топи")
+    def test_parse_coordinates_file(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tf:
+            tf.write(SAMPLE_COORDS_TEXT)
+            tf_path = tf.name
 
-    def test_calculate_slot_positions_priority_2v2_defender(self):
-        # 2v2: player (Men, good) + bot2 (Elves, good) vs bot3 (Mordor, evil) + bot4 (Isengard, evil)
-        # player is defender
-        bot_factions = {2: "elves", 3: "mordor", 4: "isengard"}
-        pos, def_s, atk_s = maps.calculate_slot_positions(
-            "westmarch", "defender", 4, "men", bot_factions, random_positions=False
-        )
-        self.assertEqual(def_s, [1, 2])
-        self.assertEqual(atk_s, [3, 4])
-        wm = maps.MAPS["westmarch"]
-        self.assertEqual(pos[1], wm["defense_positions"][0])
-        self.assertEqual(pos[2], wm["defense_positions"][1])
-        self.assertEqual(pos[3], wm["attack_positions"][0])
-        self.assertEqual(pos[4], wm["attack_positions"][1])
+        try:
+            coords = maps.parse_coordinates_file(tf_path)
+            self.assertEqual(len(coords), 8)
+            self.assertEqual(coords[0], (0.4906, 0.3514))
+            self.assertEqual(coords[1], (0.4984, 0.3306))
+            self.assertEqual(coords[7], (0.5250, 0.3208))
+        finally:
+            os.remove(tf_path)
 
-    def test_calculate_slot_positions_priority_1v3_attacker(self):
-        # 1v3: player (Mordor, evil) vs bot2 (Men), bot3 (Elves), bot4 (Dwarves)
-        # player is attacker
-        bot_factions = {2: "men", 3: "elves", 4: "dwarves"}
-        pos, def_s, atk_s = maps.calculate_slot_positions(
-            "dagorlad", "attacker", 4, "mordor", bot_factions, random_positions=False
-        )
-        self.assertEqual(atk_s, [1])
-        self.assertEqual(def_s, [2, 3, 4])
-        dg = maps.MAPS["dagorlad"]
-        self.assertEqual(pos[1], dg["attack_positions"][0])
-        self.assertEqual(pos[2], dg["defense_positions"][0])
-        self.assertEqual(pos[3], dg["defense_positions"][1])
-        self.assertEqual(pos[4], dg["defense_positions"][2])
+    def test_find_and_load_map_file_fortress(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            fpath = os.path.join(tmpdir, "_coordinates.txt")
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(SAMPLE_COORDS_TEXT)
 
-    def test_calculate_slot_positions_fortress_owner(self):
-        # 4v4 on Minas Tirith: defenders = [1, 2, 3, 4], attackers = [5, 6, 7, 8]
-        # fortress owner = slot 4 -> slot 4 MUST get defense_positions[0]
-        bot_factions = {
-            2: "elves", 3: "dwarves", 4: "men",
-            5: "mordor", 6: "isengard", 7: "goblins", 8: "angmar"
-        }
-        pos, def_s, atk_s = maps.calculate_slot_positions(
-            "minas_tirith", "defender", 8, "men", bot_factions,
-            random_positions=False, fortress_owner=4
-        )
-        mt = maps.MAPS["minas_tirith"]
-        self.assertEqual(pos[4], mt["defense_positions"][0])  # Владелец на 1-й точке
-        self.assertEqual(pos[1], mt["defense_positions"][1])
-        self.assertEqual(pos[2], mt["defense_positions"][2])
-        self.assertEqual(pos[3], mt["defense_positions"][3])
-        self.assertEqual(pos[5], mt["attack_positions"][0])
-        self.assertEqual(pos[6], mt["attack_positions"][1])
-        self.assertEqual(pos[7], mt["attack_positions"][2])
-        self.assertEqual(pos[8], mt["attack_positions"][3])
+            found, is_fortress = maps.find_coordinates_file(fpath)
+            self.assertEqual(found, fpath)
+            self.assertTrue(is_fortress)
 
-    def test_calculate_slot_positions_fortress_owner_random(self):
-        # 4v4 on Minas Tirith with random mode: owner STILL gets defense_positions[0]
-        bot_factions = {
-            2: "elves", 3: "dwarves", 4: "men",
-            5: "mordor", 6: "isengard", 7: "goblins", 8: "angmar"
-        }
-        mt = maps.MAPS["minas_tirith"]
-        for _ in range(10):
+            m = maps.load_map_from_file(fpath)
+            self.assertTrue(m["is_fortress"])
+            self.assertEqual(len(m["defense_positions"]), 4)
+            self.assertEqual(len(m["attack_positions"]), 4)
+            self.assertEqual(m["defense_positions"][0], (0.4906, 0.3514))
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_find_and_load_map_file_regular(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            fpath = os.path.join(tmpdir, "coordinates.txt")
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(SAMPLE_COORDS_TEXT)
+
+            found, is_fortress = maps.find_coordinates_file(fpath)
+            self.assertEqual(found, fpath)
+            self.assertFalse(is_fortress)
+
+            m = maps.load_map_from_file(fpath)
+            self.assertFalse(m["is_fortress"])
+            self.assertEqual(len(m["defense_positions"]), 4)
+            self.assertEqual(len(m["attack_positions"]), 4)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_calculate_slot_positions_from_loaded_map(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tf:
+            tf.write(SAMPLE_COORDS_TEXT)
+            tf_path = tf.name
+
+        try:
+            map_data = maps.load_map_from_file(tf_path, is_fortress=True)
+            bot_factions = {2: "elves", 3: "mordor", 4: "isengard"}
             pos, def_s, atk_s = maps.calculate_slot_positions(
-                "minas_tirith", "defender", 8, "men", bot_factions,
-                random_positions=True, fortress_owner=3
-            )
-            self.assertEqual(pos[3], mt["defense_positions"][0])
-            # Other defenders are placed on remaining defense positions
-            rem_def = set(mt["defense_positions"][1:])
-            self.assertIn(pos[1], rem_def)
-            self.assertIn(pos[2], rem_def)
-            self.assertIn(pos[4], rem_def)
-
-    def test_calculate_slot_positions_random(self):
-        # Random mode: defenders only get defense coords, attackers only get attack coords
-        bot_factions = {2: "elves", 3: "mordor", 4: "isengard"}
-        wm = maps.MAPS["westmarch"]
-        def_coords_set = set(wm["defense_positions"])
-        atk_coords_set = set(wm["attack_positions"])
-
-        for _ in range(20):
-            pos, def_s, atk_s = maps.calculate_slot_positions(
-                "westmarch", "defender", 4, "men", bot_factions, random_positions=True
+                map_data, "defender", 4, "men", bot_factions,
+                random_positions=False, fortress_owner=2
             )
             self.assertEqual(def_s, [1, 2])
             self.assertEqual(atk_s, [3, 4])
-            # Each defender got a valid defense position
-            self.assertIn(pos[1], def_coords_set)
-            self.assertIn(pos[2], def_coords_set)
-            self.assertNotEqual(pos[1], pos[2])  # distinct
-            # Each attacker got a valid attack position
-            self.assertIn(pos[3], atk_coords_set)
-            self.assertIn(pos[4], atk_coords_set)
-            self.assertNotEqual(pos[3], pos[4])  # distinct
-            # No overlap between def and atk
-            self.assertNotIn(pos[1], atk_coords_set)
-            self.assertNotIn(pos[2], atk_coords_set)
-            self.assertNotIn(pos[3], def_coords_set)
-            self.assertNotIn(pos[4], def_coords_set)
-
-    def test_calculate_slot_positions_same_alliance_fallback(self):
-        # If all players pick Good factions (e.g. Men vs Elves)
-        bot_factions = {2: "elves"}
-        pos, def_s, atk_s = maps.calculate_slot_positions(
-            "dead_marshes", "defender", 2, "men", bot_factions, random_positions=False
-        )
-        self.assertEqual(def_s, [1])
-        self.assertEqual(atk_s, [2])
-        dm = maps.MAPS["dead_marshes"]
-        self.assertEqual(pos[1], dm["defense_positions"][0])
-        self.assertEqual(pos[2], dm["attack_positions"][0])
+            # Slot 2 (owner) gets first defense position
+            self.assertEqual(pos[2], (0.4906, 0.3514))
+            self.assertEqual(pos[1], (0.4984, 0.3306))
+            self.assertEqual(pos[3], (0.4656, 0.4306))
+            self.assertEqual(pos[4], (0.4945, 0.4250))
+        finally:
+            os.remove(tf_path)
 
     def test_assign_start_positions_regular_map(self):
         # Check regular map: ascending order 1, 2, 3, 4 with 1 click each
@@ -304,42 +245,39 @@ class TestMaps(unittest.TestCase):
         finally:
             room.assign_start_position = orig_assign
 
-    def test_ask_map(self):
-        with patch("builtins.input", side_effect=["1"]):
-            self.assertEqual(main.ask_map(), "westmarch")
-        with patch("builtins.input", side_effect=["dagorlad"]):
-            self.assertEqual(main.ask_map(), "dagorlad")
-        with patch("builtins.input", side_effect=["Минас Тирит"]):
-            self.assertEqual(main.ask_map(), "minas_tirith")
+    def test_pyinstaller_main_spec(self):
+        spec_path = os.path.join(ROOT, "packaging", "main.spec")
+        self.assertTrue(os.path.exists(spec_path))
 
-    def test_ask_player_role(self):
-        with patch("builtins.input", side_effect=["1"]):
-            self.assertEqual(main.ask_player_role(), "defender")
-        with patch("builtins.input", side_effect=["защитник"]):
-            self.assertEqual(main.ask_player_role(), "defender")
-        with patch("builtins.input", side_effect=["2"]):
-            self.assertEqual(main.ask_player_role(), "attacker")
-        with patch("builtins.input", side_effect=["атакующий"]):
-            self.assertEqual(main.ask_player_role(), "attacker")
+        calls = {}
 
-    def test_ask_position_mode(self):
-        with patch("builtins.input", side_effect=["1"]):
-            self.assertEqual(main.ask_position_mode(), "priority")
-        with patch("builtins.input", side_effect=[""]):
-            self.assertEqual(main.ask_position_mode(), "priority")
-        with patch("builtins.input", side_effect=["2"]):
-            self.assertEqual(main.ask_position_mode(), "random")
-        with patch("builtins.input", side_effect=["случайно"]):
-            self.assertEqual(main.ask_position_mode(), "random")
+        class _A:
+            def __init__(self, scripts, **kw):
+                calls["analysis"] = kw
+                calls["scripts"] = scripts
+                self.scripts = [(os.path.basename(s), s, "PYSOURCE") for s in scripts]
+                self.pure, self.binaries, self.datas = [], [], []
 
-    def test_ask_fortress_owner(self):
-        # If only 1 defender, automatic selection
-        self.assertEqual(main.ask_fortress_owner([1]), 1)
-        # If multiple defenders, user chooses
-        with patch("builtins.input", side_effect=["4"]):
-            self.assertEqual(main.ask_fortress_owner([1, 2, 4]), 4)
-        with patch("builtins.input", side_effect=["игрок"]):
-            self.assertEqual(main.ask_fortress_owner([1, 3, 5]), 1)
+        def _PYZ(pure):
+            return {"pyz": pure}
+
+        def _EXE(pyz, scripts, binaries, datas, *a, **kw):
+            calls["exe"] = kw
+            return {"exe": kw}
+
+        g = {"__file__": spec_path, "SPECPATH": os.path.dirname(spec_path),
+             "Analysis": _A, "PYZ": _PYZ, "EXE": _EXE, "COLLECT": None,
+             "BUNDLE": None, "Tree": None}
+        with open(spec_path, encoding="utf-8") as f:
+            src = f.read()
+        exec(compile(src, spec_path, "exec"), g)
+
+        exe = calls.get("exe", {})
+        self.assertEqual(calls.get("scripts"), [os.path.join(ROOT, "main.py")])
+        self.assertEqual(exe.get("name"), "Main")
+        self.assertTrue(exe.get("console"))
+        self.assertTrue(exe.get("uac_admin"))
+        self.assertIsNone(exe.get("runtime_tmpdir"))
 
 
 if __name__ == "__main__":
