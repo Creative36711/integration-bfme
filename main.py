@@ -156,6 +156,35 @@ def ask_position_mode():
         log("  Введите 1 (по приоритету) или 2 (случайно).")
 
 
+def ask_fortress_owner(defender_slots, bot_factions=None, player_faction=None):
+    """Спрашивает, какой слот из защитников является владельцем крепости."""
+    if len(defender_slots) == 1:
+        slot = defender_slots[0]
+        fname = room.FACTION_NAMES.get(player_faction if slot == 1 else bot_factions.get(slot, ""), "")
+        name = "игрок" if slot == 1 else "бот"
+        desc = f"{name}, {fname}" if fname else name
+        log(f"Владелец крепости: слот {slot} ({desc})")
+        return slot
+
+    log("Кто владелец крепости (из защитников)?")
+    for slot in sorted(defender_slots):
+        if slot == 1:
+            fname = room.FACTION_NAMES.get(player_faction, "")
+            log(f"  {slot}. Слот {slot} (игрок{f', {fname}' if fname else ''})")
+        else:
+            fname = room.FACTION_NAMES.get(bot_factions.get(slot, ""), "") if bot_factions else ""
+            log(f"  {slot}. Слот {slot} (бот{f', {fname}' if fname else ''})")
+
+    while True:
+        s = input("> ").strip().lower()
+        if s.isdigit() and int(s) in defender_slots:
+            return int(s)
+        if s in ("игрок", "player", "1") and 1 in defender_slots:
+            return 1
+        valid_str = ", ".join(str(x) for x in sorted(defender_slots))
+        log(f"  Введите номер слота из защитников ({valid_str}).")
+
+
 def ask_army(faction):
     """Состав стартовой армии игрока: список отрядов, каждый со своим уровнем
     и апгрейдами. Возвращает [{"unit":..., "level":N, "upgrades":[...]}].
@@ -340,9 +369,16 @@ def main(argv=None):
     player_role = ask_player_role()
     position_mode = ask_position_mode()
     random_pos = (position_mode == "random")
+
+    fortress_owner = None
+    if maps.is_fortress_map(map_key):
+        def_slots_preview, _ = maps.get_team_slots(player_role, total_players, faction, bot_factions)
+        fortress_owner = ask_fortress_owner(def_slots_preview, bot_factions, faction)
+
     slot_positions, def_slots, atk_slots = maps.calculate_slot_positions(
         map_key, player_role, total_players, faction, bot_factions,
-        random_positions=random_pos)
+        random_positions=random_pos,
+        fortress_owner=fortress_owner)
     army = ask_army(faction)
     if not army:
         army = spawn.random_squads(faction)
@@ -359,13 +395,18 @@ def main(argv=None):
     mode_name = "Случайно" if random_pos else "По приоритету"
     log(f"[setup] фракция={faction}  цвет={color_name}  игроков={total_players}  "
         f"сложность ботов={DIFFICULTY_NAMES[difficulty]}")
-    log(f"[setup] карта={map_info['name']} ({map_info['map_name']})")
+    log(f"[setup] карта={map_info['name']} ({map_info['map_name']})"
+        + (" [КРЕПОСТЬ]" if map_info.get("is_fortress") else ""))
     log(f"[setup] игрок={role_name}  расстановка={mode_name}")
+    if fortress_owner:
+        owner_name = "игрок" if fortress_owner == 1 else f"бот ({room.FACTION_NAMES.get(bot_factions.get(fortress_owner, ''), '')})"
+        log(f"[setup]   владелец крепости: слот {fortress_owner} ({owner_name}) -> первая позиция")
     log(f"[setup]   оборона: слоты {def_slots}")
     log(f"[setup]   атака:   слоты {atk_slots}")
     for s_idx in sorted(slot_positions):
         side = "защита" if s_idx in def_slots else "атака"
-        log(f"[setup]   позиция слота {s_idx} ({side}): {slot_positions[s_idx]}")
+        owner_mark = " [владелец крепости]" if s_idx == fortress_owner else ""
+        log(f"[setup]   позиция слота {s_idx} ({side}{owner_mark}): {slot_positions[s_idx]}")
     for slot in sorted(bot_factions):
         log(f"[setup]   слот {slot}: {room.FACTION_NAMES.get(bot_factions[slot])}")
     for sq in army:
@@ -499,7 +540,7 @@ def main(argv=None):
         if slot_positions:
             log(f"[room] назначаю стартовые позиции на карте «{map_info['name']}» "
                 f"({len(slot_positions)} слотов)...")
-            if not room.assign_start_positions(slot_positions):
+            if not room.assign_start_positions(slot_positions, fortress_owner=fortress_owner):
                 return 1
 
         # 8. Начать игру (после клика идёт 5-сек отсчёт; ввод остаётся

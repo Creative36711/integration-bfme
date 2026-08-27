@@ -257,19 +257,39 @@ def assign_start_position(slot, frac_pos, clicks=1):
         if clicks > 1:
             time.sleep(T["start_pos_click"])
     time.sleep(T["start_pos_click"])
-    log(f"[room] стартовая позиция назначена слоту {slot} (pos={frac_pos})")
+    log(f"[room] стартовая позиция назначена слоту {slot} (кликов: {clicks}, pos={frac_pos})")
     return True
 
 
-def assign_start_positions(slot_positions):
+def assign_start_positions(slot_positions, fortress_owner=None):
     """Назначить стартовые позиции слотам на миникарте.
 
     slot_positions — dict {slot: (fx, fy)}.
-    Расстановка идёт по возрастанию номеров слотов (1, 2, 3, ...):
-    первый клик назначает слот 1 (игрока), следующий клик на другую точку
-    автоматически назначает следующий свободный слот (слот 2), затем слот 3 и т.д.
-    Каждая позиция кликается ровно 1 раз.
+    fortress_owner — номер слота владельца крепости (или None).
+
+    Механика:
+      - Если задан fortress_owner: назначаем его первым, делая N кликов
+        (N = номер слота), чтобы именно он встал на главную точку крепости.
+        Затем все остальные слоты назначаются по возрастанию номеров (1, 2, 3, ...)
+        ровно по 1 клику на точку (игра автоматически подставляет следующий свободный слот).
+      - Если fortress_owner не задан: все слоты назначаются по возрастанию номеров
+        (1, 2, 3, ...) ровно по 1 клику на каждую позицию.
     """
+    if fortress_owner and fortress_owner in slot_positions:
+        # 1. Владелец крепости кликается первым: N кликов на его координату
+        owner_pos = slot_positions[fortress_owner]
+        if not assign_start_position(fortress_owner, owner_pos, clicks=fortress_owner):
+            return False
+
+        # 2. Все остальные слоты — по возрастанию, по 1 клику
+        other_slots = sorted(s for s in slot_positions.keys() if s != fortress_owner)
+        for slot in other_slots:
+            pos = slot_positions[slot]
+            if not assign_start_position(slot, pos, clicks=1):
+                return False
+        return True
+
+    # Обычная карта (без крепости) — все слоты по 1 клику по возрастанию
     for slot in sorted(slot_positions.keys()):
         pos = slot_positions[slot]
         if not assign_start_position(slot, pos, clicks=1):

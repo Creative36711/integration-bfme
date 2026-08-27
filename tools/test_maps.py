@@ -34,6 +34,12 @@ if sys.platform != "win32":
         fake_lock.lock = lambda: True
         fake_lock.unlock = lambda: None
         sys.modules["bridge.input_lock"] = fake_lock
+    if "bridge.elevate" not in sys.modules:
+        fake_elevate = types.ModuleType("bridge.elevate")
+        fake_elevate.is_admin = lambda: True
+        fake_elevate.ensure_admin = lambda: None
+        fake_elevate.restore_real_appdata = lambda argv=None: None
+        sys.modules["bridge.elevate"] = fake_elevate
     if "bridge.visual_ready" not in sys.modules:
         fake_vr = types.ModuleType("bridge.visual_ready")
         fake_vr.load_marker = lambda *a: (None, None)
@@ -53,11 +59,18 @@ class TestMaps(unittest.TestCase):
         for k, m in maps.MAPS.items():
             self.assertIn("name", m)
             self.assertIn("map_name", m)
+            self.assertIn("is_fortress", m)
             self.assertEqual(len(m["defense_positions"]), 4)
             self.assertEqual(len(m["attack_positions"]), 4)
             for x, y in m["defense_positions"] + m["attack_positions"]:
                 self.assertTrue(0.0 <= x <= 1.0)
                 self.assertTrue(0.0 <= y <= 1.0)
+
+        # Проверка флага крепости
+        self.assertFalse(maps.is_fortress_map("westmarch"))
+        self.assertFalse(maps.is_fortress_map("dagorlad"))
+        self.assertFalse(maps.is_fortress_map("dead_marshes"))
+        self.assertTrue(maps.is_fortress_map("minas_tirith"))
 
     def test_exact_coordinates(self):
         wm = maps.MAPS["westmarch"]
@@ -156,22 +169,45 @@ class TestMaps(unittest.TestCase):
         self.assertEqual(pos[3], dg["defense_positions"][1])
         self.assertEqual(pos[4], dg["defense_positions"][2])
 
-    def test_calculate_slot_positions_priority_4v4(self):
-        # 4v4: 4 good vs 4 evil
+    def test_calculate_slot_positions_fortress_owner(self):
+        # 4v4 on Minas Tirith: defenders = [1, 2, 3, 4], attackers = [5, 6, 7, 8]
+        # fortress owner = slot 4 -> slot 4 MUST get defense_positions[0]
         bot_factions = {
             2: "elves", 3: "dwarves", 4: "men",
             5: "mordor", 6: "isengard", 7: "goblins", 8: "angmar"
         }
         pos, def_s, atk_s = maps.calculate_slot_positions(
-            "minas_tirith", "defender", 8, "men", bot_factions, random_positions=False
+            "minas_tirith", "defender", 8, "men", bot_factions,
+            random_positions=False, fortress_owner=4
         )
-        self.assertEqual(def_s, [1, 2, 3, 4])
-        self.assertEqual(atk_s, [5, 6, 7, 8])
         mt = maps.MAPS["minas_tirith"]
-        for i, s in enumerate(def_s):
-            self.assertEqual(pos[s], mt["defense_positions"][i])
-        for i, s in enumerate(atk_s):
-            self.assertEqual(pos[s], mt["attack_positions"][i])
+        self.assertEqual(pos[4], mt["defense_positions"][0])  # Владелец на 1-й точке
+        self.assertEqual(pos[1], mt["defense_positions"][1])
+        self.assertEqual(pos[2], mt["defense_positions"][2])
+        self.assertEqual(pos[3], mt["defense_positions"][3])
+        self.assertEqual(pos[5], mt["attack_positions"][0])
+        self.assertEqual(pos[6], mt["attack_positions"][1])
+        self.assertEqual(pos[7], mt["attack_positions"][2])
+        self.assertEqual(pos[8], mt["attack_positions"][3])
+
+    def test_calculate_slot_positions_fortress_owner_random(self):
+        # 4v4 on Minas Tirith with random mode: owner STILL gets defense_positions[0]
+        bot_factions = {
+            2: "elves", 3: "dwarves", 4: "men",
+            5: "mordor", 6: "isengard", 7: "goblins", 8: "angmar"
+        }
+        mt = maps.MAPS["minas_tirith"]
+        for _ in range(10):
+            pos, def_s, atk_s = maps.calculate_slot_positions(
+                "minas_tirith", "defender", 8, "men", bot_factions,
+                random_positions=True, fortress_owner=3
+            )
+            self.assertEqual(pos[3], mt["defense_positions"][0])
+            # Other defenders are placed on remaining defense positions
+            rem_def = set(mt["defense_positions"][1:])
+            self.assertIn(pos[1], rem_def)
+            self.assertIn(pos[2], rem_def)
+            self.assertIn(pos[4], rem_def)
 
     def test_calculate_slot_positions_random(self):
         # Random mode: defenders only get defense coords, attackers only get attack coords
@@ -212,8 +248,8 @@ class TestMaps(unittest.TestCase):
         self.assertEqual(pos[1], dm["defense_positions"][0])
         self.assertEqual(pos[2], dm["attack_positions"][0])
 
-    def test_assign_start_positions_order(self):
-        # Check that assign_start_positions iterates in ascending slot order (1, 2, 3, ...) with 1 click
+    def test_assign_start_positions_regular_map(self):
+        # Check regular map: ascending order 1, 2, 3, 4 with 1 click each
         calls = []
         orig_assign = room.assign_start_position
 
@@ -236,6 +272,35 @@ class TestMaps(unittest.TestCase):
             clicks_called = [c[2] for c in calls]
             self.assertEqual(slots_called, [1, 2, 3, 4])
             self.assertEqual(clicks_called, [1, 1, 1, 1])
+        finally:
+            room.assign_start_position = orig_assign
+
+    def test_assign_start_positions_fortress_owner(self):
+        # Fortress owner slot 8 -> 8 clicks on owner's position first,
+        # then remaining slots in ascending order with 1 click each
+        calls = []
+        orig_assign = room.assign_start_position
+
+        def mock_assign(slot, pos, clicks=1):
+            calls.append((slot, pos, clicks))
+            return True
+
+        room.assign_start_position = mock_assign
+        try:
+            slot_positions = {
+                1: (0.1, 0.1),
+                2: (0.2, 0.2),
+                8: (0.8, 0.8),
+                5: (0.5, 0.5),
+            }
+            res = room.assign_start_positions(slot_positions, fortress_owner=8)
+            self.assertTrue(res)
+            # First slot 8 with 8 clicks
+            self.assertEqual(calls[0], (8, (0.8, 0.8), 8))
+            # Then remaining slots 1, 2, 5 with 1 click each
+            remaining_calls = calls[1:]
+            self.assertEqual([c[0] for c in remaining_calls], [1, 2, 5])
+            self.assertEqual([c[2] for c in remaining_calls], [1, 1, 1])
         finally:
             room.assign_start_position = orig_assign
 
@@ -266,6 +331,15 @@ class TestMaps(unittest.TestCase):
             self.assertEqual(main.ask_position_mode(), "random")
         with patch("builtins.input", side_effect=["случайно"]):
             self.assertEqual(main.ask_position_mode(), "random")
+
+    def test_ask_fortress_owner(self):
+        # If only 1 defender, automatic selection
+        self.assertEqual(main.ask_fortress_owner([1]), 1)
+        # If multiple defenders, user chooses
+        with patch("builtins.input", side_effect=["4"]):
+            self.assertEqual(main.ask_fortress_owner([1, 2, 4]), 4)
+        with patch("builtins.input", side_effect=["игрок"]):
+            self.assertEqual(main.ask_fortress_owner([1, 3, 5]), 1)
 
 
 if __name__ == "__main__":
