@@ -238,7 +238,7 @@ def set_slot_color(slot, color, excluded):
 
 
 # ===========================================================================
-# Стартовая позиция на карте (крепость)
+# Стартовые позиции на карте (оборона / атака)
 # ===========================================================================
 def assign_start_position(slot, frac_pos):
     """Назначить стартовую позицию слоту: кликнуть точку карты N раз.
@@ -256,7 +256,22 @@ def assign_start_position(slot, frac_pos):
     for _ in range(slot):
         nav.click(x, y)
         time.sleep(T["start_pos_click"])
-    log(f"[room] стартовая позиция назначена слоту {slot} ({slot} кликов)")
+    log(f"[room] стартовая позиция назначена слоту {slot} ({slot} кликов, pos={frac_pos})")
+    return True
+
+
+def assign_start_positions(slot_positions):
+    """Назначить стартовые позиции слотам на миникарте.
+
+    slot_positions — dict {slot: (fx, fy)}.
+    Чтобы назначения не сбивали друг друга при циклических кликах на миникарте,
+    назначаем слоты в порядке УБЫВАНИЯ их номеров (например: 4, 3, 2, 1).
+    Каждый слот N требует N кликов по своей точке на миникарте.
+    """
+    for slot in sorted(slot_positions.keys(), reverse=True):
+        pos = slot_positions[slot]
+        if not assign_start_position(slot, pos):
+            return False
     return True
 
 
