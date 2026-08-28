@@ -26,10 +26,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bridge import config
 from bridge import elevate
-from bridge import fortresses
 from bridge import input_lock
 from bridge import launcher
 from bridge.log import log, start as log_start
+from bridge import maps
 from bridge import menu
 from bridge import navigate as nav
 from bridge import network_prefs
@@ -106,43 +106,85 @@ def ask_bot_factions(total_players):
     return factions
 
 
-def ask_battle_type():
-    """Крепость или обычная локация."""
-    log("Битва в крепости или на обычной локации?")
-    log("  1. Крепость")
-    log("  2. Обычная локация")
-    while True:
-        s = input("> ").strip().lower()
-        if s in ("1", "крепость", "в крепости"):
-            return "fortress"
-        if s in ("2", "обычная", "обычная локация"):
-            return "normal"
-        log("  Введите 1 (крепость) или 2 (обычная).")
-
-
-def ask_fortress():
-    """Какая крепость."""
-    log("В какой крепости будет битва?")
-    keys = list(fortresses.FORTRESSES.keys())
+def ask_map():
+    """Какая карта."""
+    maps_dict = maps.reload_maps()
+    keys = list(maps_dict.keys())
+    log("На какой карте происходит игра?")
     for i, k in enumerate(keys, 1):
-        log(f"  {i}. {fortresses.FORTRESSES[k]['name']}")
+        m = maps_dict[k]
+        fort_tag = " [КРЕПОСТЬ]" if m.get("is_fortress") else ""
+        log(f"  {i}. {m['name']}{fort_tag} ({m['map_name']})")
     while True:
         s = input("> ").strip().lower()
         if s.isdigit() and 1 <= int(s) <= len(keys):
             return keys[int(s) - 1]
         for k in keys:
-            if s == k or s == fortresses.FORTRESSES[k]['name'].lower():
+            m = maps_dict[k]
+            if s in (k, m['name'].lower(), m['map_name'].lower()):
                 return k
-        log("  Введите номер или название крепости.")
+        for k in keys:
+            m = maps_dict[k]
+            if s in m['map_name'].lower().replace("map ", ""):
+                return k
+        log("  Введите номер или название карты.")
 
 
-def ask_fortress_slot(total_players):
-    """Какой слот обороняет крепость (1..total_players)."""
+def ask_player_role():
+    """Игрок является защитником или атакующим."""
+    log("Кем является игрок?")
+    log("  1. Защитник (оборона)")
+    log("  2. Атакующий (атака)")
     while True:
-        s = input(f"Какой слот обороняет крепость (1–{total_players})? > ").strip()
-        if s.isdigit() and 1 <= int(s) <= total_players:
+        s = input("> ").strip().lower()
+        if s in ("1", "защитник", "защита", "оборона", "def", "defender"):
+            return "defender"
+        if s in ("2", "атакующий", "атака", "atk", "attacker"):
+            return "attacker"
+        log("  Введите 1 (защитник) или 2 (атакующий).")
+
+
+def ask_position_mode():
+    """Расстановка стартовых позиций: по приоритету или случайно."""
+    log("Как расставить стартовые позиции?")
+    log("  1. По приоритету")
+    log("  2. Случайно (отдельно для защиты и атаки)")
+    while True:
+        s = input("> ").strip().lower()
+        if s in ("1", "приоритет", "по приоритету", "priority", "p", ""):
+            return "priority"
+        if s in ("2", "случайно", "рандом", "random", "r"):
+            return "random"
+        log("  Введите 1 (по приоритету) или 2 (случайно).")
+
+
+def ask_fortress_owner(defender_slots, bot_factions=None, player_faction=None):
+    """Спрашивает, какой слот из защитников является владельцем крепости."""
+    if len(defender_slots) == 1:
+        slot = defender_slots[0]
+        fname = room.FACTION_NAMES.get(player_faction if slot == 1 else bot_factions.get(slot, ""), "")
+        name = "игрок" if slot == 1 else "бот"
+        desc = f"{name}, {fname}" if fname else name
+        log(f"Владелец крепости: слот {slot} ({desc})")
+        return slot
+
+    log("Кто владелец крепости (из защитников)?")
+    for slot in sorted(defender_slots):
+        if slot == 1:
+            fname = room.FACTION_NAMES.get(player_faction, "")
+            log(f"  {slot}. Слот {slot} (игрок{f', {fname}' if fname else ''})")
+        else:
+            fname = room.FACTION_NAMES.get(bot_factions.get(slot, ""), "") if bot_factions else ""
+            log(f"  {slot}. Слот {slot} (бот{f', {fname}' if fname else ''})")
+
+    while True:
+        s = input("> ").strip().lower()
+        if s.isdigit() and int(s) in defender_slots:
             return int(s)
-        log(f"  Введите число от 1 до {total_players}.")
+        if s in ("игрок", "player", "1") and 1 in defender_slots:
+            return 1
+        valid_str = ", ".join(str(x) for x in sorted(defender_slots))
+        log(f"  Введите номер слота из защитников ({valid_str}).")
 
 
 def ask_army(faction):
@@ -290,6 +332,7 @@ def main(argv=None):
     ap.add_argument("--exe", help="explicit game/launcher path")
     ap.add_argument("--arg", action="append", dest="args",
                     help="extra launch arg (repeatable)")
+    ap.add_argument("--map", help="ключ или имя карты из config/maps.json")
     ap.add_argument("--elevated", action="store_true",
                     help="launch through UAC prompt")
     ap.add_argument("--stop-at", choices=["lan", "create"], default="create",
@@ -325,11 +368,33 @@ def main(argv=None):
     total_players = ask_total_players()
     faction = ask_faction()
     bot_factions = ask_bot_factions(total_players)
-    battle_type = ask_battle_type()
-    fortress_key = fortress_slot = None
-    if battle_type == "fortress":
-        fortress_key = ask_fortress()
-        fortress_slot = ask_fortress_slot(total_players)
+
+    # Выбор карты (из config/maps.json)
+    if getattr(args, "map", None):
+        map_key = args.map
+        map_data = maps.get_map(map_key)
+        if not map_data:
+            log(f"ОШИБКА: карта '{map_key}' не найдена в config/maps.json", file=sys.stderr)
+            return 1
+        is_fortress = maps.is_fortress_map(map_data)
+    else:
+        map_key = ask_map()
+        map_data = maps.get_map(map_key)
+        is_fortress = maps.is_fortress_map(map_key)
+
+    player_role = ask_player_role()
+    position_mode = ask_position_mode()
+    random_pos = (position_mode == "random")
+
+    fortress_owner = None
+    if is_fortress:
+        def_slots_preview, _ = maps.get_team_slots(player_role, total_players, faction, bot_factions)
+        fortress_owner = ask_fortress_owner(def_slots_preview, bot_factions, faction)
+
+    slot_positions, def_slots, atk_slots = maps.calculate_slot_positions(
+        map_data, player_role, total_players, faction, bot_factions,
+        random_positions=random_pos,
+        fortress_owner=fortress_owner)
     army = ask_army(faction)
     if not army:
         army = spawn.random_squads(faction)
@@ -341,13 +406,25 @@ def main(argv=None):
     heroes, ring_heroes = ask_heroes(faction)
     handicaps = ask_handicaps(total_players)
     color_name = network_prefs.FACTION_COLORS.get(faction)
+    map_info = map_data
+    role_name = "Защитник (оборона)" if player_role == "defender" else "Атакующий (атака)"
+    mode_name = "Случайно" if random_pos else "По приоритету"
     log(f"[setup] фракция={faction}  цвет={color_name}  игроков={total_players}  "
-          f"сложность ботов={DIFFICULTY_NAMES[difficulty]}")
+        f"сложность ботов={DIFFICULTY_NAMES[difficulty]}")
+    log(f"[setup] карта={map_info['name']} ({map_info['map_name']})"
+        + (" [КРЕПОСТЬ]" if map_info.get("is_fortress") else ""))
+    log(f"[setup] игрок={role_name}  расстановка={mode_name}")
+    if fortress_owner:
+        owner_name = "игрок" if fortress_owner == 1 else f"бот ({room.FACTION_NAMES.get(bot_factions.get(fortress_owner, ''), '')})"
+        log(f"[setup]   владелец крепости: слот {fortress_owner} ({owner_name}) -> первая позиция")
+    log(f"[setup]   оборона: слоты {def_slots}")
+    log(f"[setup]   атака:   слоты {atk_slots}")
+    for s_idx in sorted(slot_positions):
+        side = "защита" if s_idx in def_slots else "атака"
+        owner_mark = " [владелец крепости]" if s_idx == fortress_owner else ""
+        log(f"[setup]   позиция слота {s_idx} ({side}{owner_mark}): {slot_positions[s_idx]}")
     for slot in sorted(bot_factions):
         log(f"[setup]   слот {slot}: {room.FACTION_NAMES.get(bot_factions[slot])}")
-    if fortress_key:
-        log(f"[setup] крепость={fortresses.FORTRESSES[fortress_key]['name']} "
-              f"(слот {fortress_slot} обороняет)")
     for sq in army:
         u = sq["unit"]
         s = f"[setup] отряд: {u} ур.{sq['level']}"
@@ -475,12 +552,11 @@ def main(argv=None):
                 if not room.set_handicap(slot, handicaps[slot]):
                     return 1
 
-        # 7. крепость: назначить стартовую позицию обороняющему слоту
-        if fortress_key:
-            name = fortresses.FORTRESSES[fortress_key]["name"]
-            pos = fortresses.FORTRESSES[fortress_key]["start_pos"]
-            log(f"[room] назначаю слот {fortress_slot} в крепость «{name}»...")
-            if not room.assign_start_position(fortress_slot, pos):
+        # 7. назначить стартовые позиции на карте
+        if slot_positions:
+            log(f"[room] назначаю стартовые позиции на карте «{map_info['name']}» "
+                f"({len(slot_positions)} слотов)...")
+            if not room.assign_start_positions(slot_positions, fortress_owner=fortress_owner):
                 return 1
 
         # 8. Начать игру (после клика идёт 5-сек отсчёт; ввод остаётся

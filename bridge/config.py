@@ -45,6 +45,7 @@ CONFIG_DIR = os.path.join(BASE_DIR, "config")
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")          # game path / args
 POSITIONS_FILE = os.path.join(CONFIG_DIR, "menu_positions.json")  # button coords
+MAPS_FILE = os.path.join(CONFIG_DIR, "maps.json")                  # map coordinates
 
 BUNDLED_CONFIG_DIR = _bundled_config_dir()
 
@@ -74,6 +75,14 @@ def load_json(path, default=None):
     return default if default is not None else {}
 
 
+def save_json(path, data):
+    """Сохранить данные в JSON файл с отступами."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
+
+
 def load_config():
     """Load config.json (game path, launch args)."""
     return load_json(CONFIG_FILE, {})
@@ -82,3 +91,8 @@ def load_config():
 def load_positions():
     """Load menu_positions.json (button coords)."""
     return load_json(POSITIONS_FILE, {})
+
+
+def load_maps():
+    """Load maps.json (map definitions & coordinates)."""
+    return load_json(MAPS_FILE, {})

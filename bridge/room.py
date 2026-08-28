@@ -238,13 +238,12 @@ def set_slot_color(slot, color, excluded):
 
 
 # ===========================================================================
-# Стартовая позиция на карте (крепость)
+# Стартовые позиции на карте (оборона / атака)
 # ===========================================================================
-def assign_start_position(slot, frac_pos):
-    """Назначить стартовую позицию слоту: кликнуть точку карты N раз.
+def assign_start_position(slot, frac_pos, clicks=1):
+    """Назначить стартовую позицию слоту: кликнуть точку карты `clicks` раз (по умолчанию 1).
 
-    frac_pos — (fx, fy) доля окна. Механика: 1 клик = слот 1, 2 клика = слот 2,
-    ... N кликов = слот N (игра назначает точку очередному слоту по порядку).
+    frac_pos — (fx, fy) доля окна.
     """
     vp = nav.viewport()
     if not vp:
@@ -253,10 +252,48 @@ def assign_start_position(slot, frac_pos):
     l, t, W, H = vp
     x = l + int(frac_pos[0] * W)
     y = t + int(frac_pos[1] * H)
-    for _ in range(slot):
+    for _ in range(clicks):
         nav.click(x, y)
-        time.sleep(T["start_pos_click"])
-    log(f"[room] стартовая позиция назначена слоту {slot} ({slot} кликов)")
+        if clicks > 1:
+            time.sleep(T["start_pos_click"])
+    time.sleep(T["start_pos_click"])
+    log(f"[room] стартовая позиция назначена слоту {slot} (кликов: {clicks}, pos={frac_pos})")
+    return True
+
+
+def assign_start_positions(slot_positions, fortress_owner=None):
+    """Назначить стартовые позиции слотам на миникарте.
+
+    slot_positions — dict {slot: (fx, fy)}.
+    fortress_owner — номер слота владельца крепости (или None).
+
+    Механика:
+      - Если задан fortress_owner: назначаем его первым, делая N кликов
+        (N = номер слота), чтобы именно он встал на главную точку крепости.
+        Затем все остальные слоты назначаются по возрастанию номеров (1, 2, 3, ...)
+        ровно по 1 клику на точку (игра автоматически подставляет следующий свободный слот).
+      - Если fortress_owner не задан: все слоты назначаются по возрастанию номеров
+        (1, 2, 3, ...) ровно по 1 клику на каждую позицию.
+    """
+    if fortress_owner and fortress_owner in slot_positions:
+        # 1. Владелец крепости кликается первым: N кликов на его координату
+        owner_pos = slot_positions[fortress_owner]
+        if not assign_start_position(fortress_owner, owner_pos, clicks=fortress_owner):
+            return False
+
+        # 2. Все остальные слоты — по возрастанию, по 1 клику
+        other_slots = sorted(s for s in slot_positions.keys() if s != fortress_owner)
+        for slot in other_slots:
+            pos = slot_positions[slot]
+            if not assign_start_position(slot, pos, clicks=1):
+                return False
+        return True
+
+    # Обычная карта (без крепости) — все слоты по 1 клику по возрастанию
+    for slot in sorted(slot_positions.keys()):
+        pos = slot_positions[slot]
+        if not assign_start_position(slot, pos, clicks=1):
+            return False
     return True
 
 

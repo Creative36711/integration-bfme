@@ -1,48 +1,37 @@
 #!/usr/bin/env python3
 """
-Калибратор координат И маркеров готовности.
+Калибратор карт и координат для BFME2: RotWK.
 
-Запускает игру в ОКОННОМ режиме (-win, временно понижая разрешение), после
-чего по горячим клавишам:
+Интерактивно спрашивает параметры карты (название и тип: крепость/обычная),
+запускает игру в оконном режиме и пошагово ведёт пользователя по точкам:
 
-    F8 — захватить МАРКЕР готовности (маленький кусочек экрана вокруг курсора,
-         напр. треугольник-индикатор выпадающего списка). Сохраняется в
-         config/menu_marker.npy + config/menu_marker.json. Нужен для детекта
-         «экран загрузился» (bridge/visual_ready.py).
-    F9 — снять КООРДИНАТУ курсора (доля окна) — выводится в консоль и
-         дописывается в config/calibrate_coords.txt.
-    F10 — выход.
+  - Обычная карта: 4 позиции обороны + 4 позиции атаки (F9 для каждой точки);
+  - Крепость: 1-я ГЛАВНАЯ позиция (владелец крепости, управление воротами)
+              + 3 позиции обороны + 4 позиции атаки.
 
-КАК ЗАПУСТИТЬ (любой из трёх способов):
-    1. Двойной клик по calibrate.bat в корне проекта — Python не нужен:
-       bat сам найдёт Python, а если его нет — скачает портативный и поставит
-       numpy. Это самый простой способ раздать инструмент другому человеку.
-    2. python tools\\calibrate.py — из исходников (нужен Python 3 + numpy).
-    3. dist\\Calibrate\\Calibrate.exe — собранный однофайловый exe
-       (build_calibrate_exe.bat), Python на целевой машине не нужен вообще.
+После снятия всех 8 точек карта автоматически сохраняется в config/maps.json
+и сразу становится доступна при запуске main.py.
 
-Полезные ключи:
-    --exe "C:\\Games\\RotWK\\lotrbfme2ep1.exe"  — путь к игре вручную
-    --attach            — не запускать игру, подключиться к уже открытой
-    --no-resolution     — не трогать Resolution в Options.ini
-    --resolution "1024 768" — своё разрешение на время калибровки
-    --no-admin          — не запрашивать UAC (клики в игру не пройдут)
-    --no-pause          — не ждать Enter перед выходом
+Горячие клавиши:
+    F8  — захватить маркер готовности меню (config/menu_marker.npy/.json)
+    F9  — снять координату текущей точки (шаги 1..8)
+    F10 — выход / отмена
 
-Требует numpy (pip install numpy). Работает только под Windows.
+Запуск:
+    python tools/calibrate.py
+    python tools/calibrate.py --attach    (если игра уже запущена)
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import traceback
 
-# Make `bridge` / `tools` importable no matter how this script is launched.
-# (В собранном exe PyInstaller сам разруливает импорты — путь не нужен.)
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if not getattr(sys, "frozen", False) and _ROOT not in sys.path:
+if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 ID_MARKER = 1
@@ -52,20 +41,20 @@ ID_QUIT = 3
 CAL_RESOLUTION = "1280 720"  # разрешение на время калибровки
 RESTORE_AFTER = 5.0          # через сколько секунд после запуска вернуть прежнее
 WINDOW_TIMEOUT = 120.0       # сколько ждать появления окна игры
-
-# Размер маркера в долях от меньшей стороны окна (квадрат).
 MARKER_SIZE_FRAC = 0.03
 
 # Модули «моста» подключаются лениво (они Windows-only) — см. _load_bridge().
-config = elevate = launcher = nav = options_ini = network_prefs = hotkey = None
+config = elevate = launcher = nav = options_ini = network_prefs = hotkey = maps = None
 
 MARKER_NPY = MARKER_JSON = COORDS_FILE = LOG_FILE = None
 _LOG_READY = False
 
+# Состояние мастера калибровки
+_MAP_INFO = None
+_STEPS = []
+_CAPTURED_COORDS = []
 
-# ---------------------------------------------------------------------------
-# Вывод: консоль + лог-файл рядом с приложением
-# ---------------------------------------------------------------------------
+
 def _say(msg=""):
     """Печать в консоль с одновременной записью в лог-файл."""
     print(msg)
@@ -75,11 +64,10 @@ def _say(msg=""):
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"{msg}\n")
     except OSError:
-        pass  # лог — не критично
+        pass
 
 
 def _start_log():
-    """Завести лог-файл рядом с exe/проектом (для отчётов «не работает»)."""
     global LOG_FILE, _LOG_READY
     try:
         LOG_FILE = os.path.join(config.BASE_DIR, "calibrate_log.txt")
@@ -97,19 +85,19 @@ def _require_windows():
 
 
 def _load_bridge():
-    """Подключить Windows-модули моста и посчитать пути к файлам данных."""
-    global config, elevate, launcher, nav, options_ini, network_prefs, hotkey
+    global config, elevate, launcher, nav, options_ini, network_prefs, hotkey, maps
     global MARKER_NPY, MARKER_JSON, COORDS_FILE
 
     from bridge import config as _config
     from bridge import elevate as _elevate
     from bridge import launcher as _launcher
+    from bridge import maps as _maps
     from bridge import navigate as _nav
     from bridge import network_prefs as _network_prefs
     from bridge import options_ini as _options_ini
     from tools import hotkey as _hotkey
 
-    config, elevate, launcher = _config, _elevate, _launcher
+    config, elevate, launcher, maps = _config, _elevate, _launcher, _maps
     nav, options_ini, network_prefs, hotkey = (_nav, _options_ini,
                                                _network_prefs, _hotkey)
 
@@ -120,15 +108,118 @@ def _load_bridge():
 
 
 def _require_numpy():
-    """numpy нужен для захвата/сохранения маркера. Понятная ошибка, если нет."""
     try:
         import numpy  # noqa: F401
         return True
     except ImportError:
         _say("[cal] НЕ УСТАНОВЛЕН numpy — без него маркер (F8) сохранить нельзя.")
         _say("[cal]   Установи:  python -m pip install numpy")
-        _say("[cal]   (calibrate.bat ставит numpy автоматически)")
         return False
+
+
+def _make_key(name):
+    """Генерирует латинский slug/key из названия карты."""
+    translit = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya', ' ': '_'
+    }
+    s = str(name).strip().lower()
+    res = []
+    for ch in s:
+        if ch in translit:
+            res.append(translit[ch])
+        elif ch.isalnum() or ch == '_':
+            res.append(ch)
+        else:
+            res.append('_')
+    key = re.sub(r'_+', '_', ''.join(res)).strip('_')
+    return key or "custom_map"
+
+
+def ask_map_setup(args):
+    """Интерактивный опрос: какая карта калибруется (название + тип)."""
+    if args.free:
+        return None
+
+    _say("=" * 60)
+    _say("Мастер калибровки новой карты BFME2: RotWK")
+    _say("=" * 60)
+
+    # 1. Название карты
+    if args.map_name:
+        map_name = args.map_name
+        _say(f"Название карты: {map_name}")
+    else:
+        while True:
+            map_name = input("Название карты (например: Хельмова Падь) > ").strip()
+            if map_name:
+                break
+            print("  Введите название карты.")
+
+    key = _make_key(map_name)
+
+    # 2. Системное имя карты (map mp ...)
+    if args.sys_name:
+        sys_name = args.sys_name
+    else:
+        default_sys = f"map mp {key}"
+        try:
+            s = input(f"Системное имя карты в игре (по умолчанию '{default_sys}') > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            s = ""
+        sys_name = s if s else default_sys
+
+    # 3. Крепость или обычная карта
+    if args.fortress is not None:
+        is_fortress = bool(args.fortress)
+    else:
+        _say("Это карта-крепость или обычная карта?")
+        _say("  1. Крепость (есть цитадель/стены/ворота)")
+        _say("  2. Обычная карта")
+        while True:
+            s = input("> ").strip().lower()
+            if s in ("1", "крепость", "в крепости", "fortress", "да", "yes"):
+                is_fortress = True
+                break
+            if s in ("2", "обычная", "обычная карта", "normal", "нет", "no"):
+                is_fortress = False
+                break
+            _say("  Введите 1 (крепость) или 2 (обычная).")
+
+    return {
+        "key": key,
+        "name": map_name,
+        "map_name": sys_name,
+        "is_fortress": is_fortress,
+    }
+
+
+def get_calibration_steps(is_fortress):
+    if is_fortress:
+        return [
+            "[1/8] ВНИМАНИЕ: Наведите курсор на ГЛАВНУЮ позицию владельца крепости (управляет воротами) и нажмите F9",
+            "[2/8] Наведите курсор на 2-ю позицию ЗАЩИТЫ и нажмите F9",
+            "[3/8] Наведите курсор на 3-ю позицию ЗАЩИТЫ и нажмите F9",
+            "[4/8] Наведите курсор на 4-ю позицию ЗАЩИТЫ и нажмите F9",
+            "[5/8] Наведите курсор на 1-ю позицию АТАКИ (наивысший приоритет) и нажмите F9",
+            "[6/8] Наведите курсор на 2-ю позицию АТАКИ и нажмите F9",
+            "[7/8] Наведите курсор на 3-ю позицию АТАКИ и нажмите F9",
+            "[8/8] Наведите курсор на 4-ю позицию АТАКИ и нажмите F9",
+        ]
+    else:
+        return [
+            "[1/8] Наведите курсор на 1-ю позицию ЗАЩИТЫ (наивысший приоритет) и нажмите F9",
+            "[2/8] Наведите курсор на 2-ю позицию ЗАЩИТЫ и нажмите F9",
+            "[3/8] Наведите курсор на 3-ю позицию ЗАЩИТЫ и нажмите F9",
+            "[4/8] Наведите курсор на 4-ю позицию ЗАЩИТЫ и нажмите F9",
+            "[5/8] Наведите курсор на 1-ю позицию АТАКИ (наивысший приоритет) и нажмите F9",
+            "[6/8] Наведите курсор на 2-ю позицию АТАКИ и нажмите F9",
+            "[7/8] Наведите курсор на 3-ю позицию АТАКИ и нажмите F9",
+            "[8/8] Наведите курсор на 4-ю позицию АТАКИ и нажмите F9",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +237,8 @@ def _window_box():
 
 
 def capture_coord():
-    """Снять координату курсора (доля окна), вывести и дописать в файл."""
+    """Снять координату курсора (доля окна), сохранить шаг мастера и дописать в лог."""
+    global _CAPTURED_COORDS
     box = _window_box()
     if not box:
         return
@@ -154,9 +246,9 @@ def capture_coord():
     pos = nav.get_cursor_pos()
     fx = (pos[0] - l) / W
     fy = (pos[1] - t) / H
+    pt = (round(fx, 4), round(fy, 4))
     line = f"[cal] frac=({fx:.4f}, {fy:.4f})   px=({pos[0]},{pos[1]})"
     _say(line)
-    _say(f'[cal]   для menu_positions.json:  [{fx:.4f}, {fy:.4f}],')
 
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     entry = (f"{stamp}  frac=({fx:.4f}, {fy:.4f})  px=({pos[0]},{pos[1]})"
@@ -166,6 +258,39 @@ def capture_coord():
             f.write(entry)
     except OSError as e:
         _say(f"[cal] не удалось записать {COORDS_FILE}: {e}")
+
+    if _MAP_INFO and _STEPS:
+        _CAPTURED_COORDS.append(pt)
+        idx = len(_CAPTURED_COORDS)
+        _say(f"[cal]   -> Зафиксирована точка {idx}/8: {pt}")
+
+        if idx < len(_STEPS):
+            _say()
+            _say(f"[cal] СЛЕДУЮЩИЙ ШАГ:")
+            _say(f"  {_STEPS[idx]}")
+        else:
+            # Все 8 точек собраны! Сохраняем в config/maps.json
+            def_pos = _CAPTURED_COORDS[:4]
+            atk_pos = _CAPTURED_COORDS[4:8]
+            map_data = {
+                "name": _MAP_INFO["name"],
+                "map_name": _MAP_INFO["map_name"],
+                "is_fortress": _MAP_INFO["is_fortress"],
+                "defense_positions": def_pos,
+                "attack_positions": atk_pos,
+            }
+            maps.save_map(_MAP_INFO["key"], map_data)
+            _say()
+            _say("=" * 64)
+            _say(f"[cal] ВСЕ 8 ТОЧЕК УСПЕШНО СНЯТЫ И СОХРАНЕНЫ!")
+            _say(f"[cal] Карта: «{_MAP_INFO['name']}» ({_MAP_INFO['map_name']})")
+            _say(f"[cal] Тип:   {'КРЕПОСТЬ' if _MAP_INFO['is_fortress'] else 'Обычная карта'}")
+            _say(f"[cal] Позиции обороны (4): {def_pos}")
+            _say(f"[cal] Позиции атаки   (4): {atk_pos}")
+            _say(f"[cal] Сохранено в config/maps.json.")
+            _say(f"[cal] Карта сразу готова к использованию в main.py!")
+            _say("=" * 64)
+            hotkey.post_quit()
 
 
 def capture_marker(marker_frac=MARKER_SIZE_FRAC):
@@ -179,7 +304,6 @@ def capture_marker(marker_frac=MARKER_SIZE_FRAC):
     fy = (pos[1] - t) / H
     size = max(8, int(min(W, H) * marker_frac))
 
-    # Отводим курсор в сторону, чтобы он не попал в кадр маркера.
     nav.move(l + 10, t + 10)
     time.sleep(0.3)
 
@@ -229,8 +353,6 @@ def _launch_game(args):
 
     _say(f"[cal] запускаю игру в оконном режиме: {exe.name}")
 
-    # Перед запуском временно снижаем разрешение, чтобы окно поместилось
-    # на экране; после запуска вернём прежнее (игра его уже не перечитает).
     old_res = None
     if not args.no_resolution:
         old_res = options_ini.read_option("Resolution")
@@ -256,10 +378,16 @@ def _launch_game(args):
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         prog="calibrate",
-        description="Калибровка координат меню (F9) и маркера готовности (F8) "
-                    "для BFME2: RotWK. F10 — выход.")
-    ap.add_argument("--exe", help="путь к lotrbfme2ep1.exe / game.dat "
-                                  "(иначе берётся из config/config.json)")
+        description="Калибровка 8 точек карты (4 оборона + 4 атака) и маркера меню для BFME2: RotWK.")
+    ap.add_argument("--exe", help="путь к lotrbfme2ep1.exe / game.dat")
+    ap.add_argument("--map-name", help="название карты (пропустить вопрос)")
+    ap.add_argument("--sys-name", help="системное имя карты (map mp ...)")
+    ap.add_argument("--fortress", dest="fortress", action="store_true", default=None,
+                    help="отметить карту как крепость")
+    ap.add_argument("--no-fortress", dest="fortress", action="store_false",
+                    help="отметить карту как обычную")
+    ap.add_argument("--free", action="store_true",
+                    help="свободный режим (без мастера 8 точек карты)")
     ap.add_argument("--attach", action="store_true",
                     help="не запускать игру — подключиться к уже открытому окну")
     ap.add_argument("--resolution", default=CAL_RESOLUTION,
@@ -269,11 +397,9 @@ def parse_args(argv=None):
     ap.add_argument("--wait", type=float, default=WINDOW_TIMEOUT,
                     help=f"сколько секунд ждать окно игры (по умолчанию {WINDOW_TIMEOUT:.0f})")
     ap.add_argument("--marker-size", type=float, default=MARKER_SIZE_FRAC,
-                    help="сторона маркера в долях окна (по умолчанию "
-                         f"{MARKER_SIZE_FRAC})")
+                    help=f"сторона маркера в долях окна (по умолчанию {MARKER_SIZE_FRAC})")
     ap.add_argument("--no-admin", action="store_true",
-                    help="не запрашивать права администратора (инъекция ввода "
-                         "в повышенное окно игры при этом не сработает)")
+                    help="не запрашивать права администратора")
     ap.add_argument("--no-pause", action="store_true",
                     help="не ждать Enter перед закрытием окна")
     return ap.parse_args(argv)
@@ -289,6 +415,7 @@ def _pause(enabled=True):
 
 
 def main(argv=None):
+    global _MAP_INFO, _STEPS, _CAPTURED_COORDS
     args = parse_args(argv)
 
     _require_windows()
@@ -296,12 +423,16 @@ def main(argv=None):
     _start_log()
 
     _say("[cal] калибровка BFME2: RotWK")
-    _say(f"[cal] версия Python: {sys.version.split()[0]}  "
-         f"(exe: {bool(getattr(sys, 'frozen', False))})")
+    _say(f"[cal] версия Python: {sys.version.split()[0]}")
     _say(f"[cal] папка данных: {config.CONFIG_DIR}")
 
-    # APPDATA реального пользователя: до UAC-повышения сохраняем, после —
-    # восстанавливаем (иначе Options.ini правится в профиле администратора).
+    # Интерактивный опрос параметров карты ДО блокировок
+    _MAP_INFO = ask_map_setup(args)
+    if _MAP_INFO:
+        _STEPS = get_calibration_steps(_MAP_INFO["is_fortress"])
+        _CAPTURED_COORDS = []
+
+    # APPDATA реального пользователя
     elevate.restore_real_appdata()
     network_prefs.save_real_appdata()
 
@@ -323,9 +454,15 @@ def main(argv=None):
 
     _say("=" * 60)
     _say("F8  — захватить маркер готовности (треугольник над кнопкой)")
-    _say("F9  — снять координату курсора")
-    _say("F10 — выход")
+    _say("F9  — снять координату текущей точки (шаги 1..8)")
+    _say("F10 — выход / отмена")
     _say("=" * 60)
+
+    if _MAP_INFO and _STEPS:
+        _say(f"[cal] Начинаем калибровку карты «{_MAP_INFO['name']}» "
+             f"({'КРЕПОСТЬ' if _MAP_INFO['is_fortress'] else 'Обычная карта'}):")
+        _say(f"  {_STEPS[0]}")
+        _say()
 
     hotkey.register(ID_MARKER, "F8")
     hotkey.register(ID_CAPTURE, "F9")
@@ -340,14 +477,11 @@ def main(argv=None):
 
 
 def run(argv=None):
-    """Точка входа: ловит ошибки, пишет лог и держит консоль открытой."""
     args = parse_args(argv)
     code = 1
     try:
         code = main(argv) or 0
     except SystemExit as e:
-        # elevate.ensure_admin() завершает процесс кодом 0 (копия с UAC уже
-        # работает); SystemExit("текст") — это ошибка, её надо показать.
         if isinstance(e.code, int):
             code = e.code
         elif e.code:
