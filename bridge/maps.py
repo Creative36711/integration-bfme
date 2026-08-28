@@ -2,16 +2,14 @@
 """
 Карты и их стартовые позиции (оборона и атака).
 
-Координаты могут считываться автоматически из внешнего файла:
-  - _coordinates.txt — карта-крепость (is_fortress = True, имя начинается с '_');
-  - coordinates.txt  — обычная карта (is_fortress = False).
+Карты хранятся в config/maps.json.
+На каждой карте фиксировано 8 точек:
+  - первые 4 — позиции обороны (defense_positions), отсортированные по приоритету
+  - вторые 4 — позиции атаки (attack_positions), отсортированные по приоритету
 
-Формат файла: 8 строк координат (первые 4 — оборона, следующие 4 — атака).
-Поддерживаются любые форматы (из calibrate.py, списки, кортежи, raw-числа).
-
-Если файла координат нет, программа предлагает выбор из встроенных карт.
-
-Для карты-крепости выбирается владелец (слот из защитников), который встаёт
+Карты могут быть обычными или крепостями (is_fortress = True).
+Для карты-крепости 1-я позиция обороны — главная (управляет воротами крепости).
+При запуске боя выбирается владелец крепости (слот из защитников), который встаёт
 на самую первую координату обороны (defense_positions[0]).
 
 Механика назначения в комнате:
@@ -21,23 +19,15 @@
     ровно по 1 клику (игра автоматически подставляет следующий свободный слот).
   - На обычной карте все слоты назначаются по возрастанию номеров (1, 2, 3, ...)
     ровно по 1 клику на позицию.
-
-При расстановке по приоритету:
-  - N защитников получают первые N точек обороны (первая — владельцу крепости);
-  - M атакующих получают первые M точек атаки.
-
-При случайной расстановке:
-  - Владелец крепости всегда на 1-й точке обороны;
-  - Оставшиеся защитники получают случайные точки из оставшихся оборонительных;
-  - M атакующих получают M случайных точек из 4 атакующих.
-  Защитник никогда не попадает на позицию атакующего, и наоборот.
 """
 
 import os
 import random
 import re
 
-MAPS = {
+from bridge import config
+
+DEFAULT_MAPS = {
     "westmarch": {
         "name": "Вестмарш",
         "map_name": "map mp tournament westmarch",
@@ -118,142 +108,71 @@ FACTION_ALLIANCES = {
 }
 
 
-def find_coordinates_file(explicit_path=None):
-    """Ищет файл координат.
+def load_all_maps():
+    """Загрузить все карты из config/maps.json (с fallback на DEFAULT_MAPS)."""
+    raw = config.load_maps()
+    if not raw:
+        raw = dict(DEFAULT_MAPS)
+        try:
+            config.save_json(config.MAPS_FILE, raw)
+        except OSError:
+            pass
 
-    Возвращает (filepath, is_fortress) или (None, False).
-    Правило определения крепости:
-      - Если имя файла начинается с '_' (например, _coordinates.txt) -> это крепость (is_fortress=True).
-      - Иначе (например, coordinates.txt) -> обычная карта (is_fortress=False).
-    """
-    from bridge import config
-
-    if explicit_path and os.path.isfile(explicit_path):
-        fname = os.path.basename(explicit_path)
-        is_fortress = fname.startswith("_")
-        return os.path.abspath(explicit_path), is_fortress
-
-    search_dirs = [
-        os.getcwd(),
-        getattr(config, "BASE_DIR", None),
-        getattr(config, "CONFIG_DIR", None),
-    ]
-    seen = set()
-    dirs = []
-    for d in search_dirs:
-        if d and d not in seen and os.path.isdir(d):
-            seen.add(d)
-            dirs.append(d)
-
-    # 1. Сначала проверяем _coordinates.txt (крепость)
-    for d in dirs:
-        p = os.path.join(d, "_coordinates.txt")
-        if os.path.isfile(p):
-            return os.path.abspath(p), True
-
-    # 2. Затем проверяем coordinates.txt (обычная карта)
-    for d in dirs:
-        p = os.path.join(d, "coordinates.txt")
-        if os.path.isfile(p):
-            return os.path.abspath(p), False
-
-    return None, False
+    maps_dict = {}
+    for k, v in raw.items():
+        def_pos = [tuple(p) for p in v.get("defense_positions", [])]
+        atk_pos = [tuple(p) for p in v.get("attack_positions", [])]
+        maps_dict[k] = {
+            "name": v.get("name", k),
+            "map_name": v.get("map_name", k),
+            "is_fortress": bool(v.get("is_fortress", False)),
+            "defense_positions": def_pos,
+            "attack_positions": atk_pos,
+        }
+    return maps_dict
 
 
-def parse_coordinates_file(filepath):
-    """Считывает координаты из файла.
-
-    Поддерживает форматы:
-      1) '2026-08-27 17:13:06 frac=(0.4906, 0.3514) px=(1192,488) -> [0.4906, 0.3514],'
-      2) '[cal] frac=(0.4906, 0.3514) px=(1192,488)'
-      3) '[0.4906, 0.3514],' или '(0.4906, 0.3514)'
-      4) '0.4906, 0.3514' или '0.4906 0.3514'
-
-    Возвращает список кортежей [(fx, fy), ...].
-    """
-    coords = []
-    if not filepath or not os.path.isfile(filepath):
-        return coords
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("//"):
-                continue
-
-            # 1. Формат со стрелкой: -> [0.1234, 0.5678]
-            m = re.search(r'->\s*\[\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\]', line)
-            if m:
-                coords.append((float(m.group(1)), float(m.group(2))))
-                continue
-
-            # 2. Формат frac=(0.1234, 0.5678)
-            m = re.search(r'frac=\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)', line)
-            if m:
-                coords.append((float(m.group(1)), float(m.group(2))))
-                continue
-
-            # 3. Формат скобок: [0.1234, 0.5678] или (0.1234, 0.5678)
-            m = re.search(r'[\[\(]\s*([0-9.]+)\s*,\s*([0-9.]+)\s*[\]\)]', line)
-            if m:
-                coords.append((float(m.group(1)), float(m.group(2))))
-                continue
-
-            # 4. Формат двух float
-            m = re.search(r'([0-9]+\.[0-9]+)[,\s]+([0-9]+\.[0-9]+)', line)
-            if m:
-                coords.append((float(m.group(1)), float(m.group(2))))
-                continue
-
-    return coords
+# Всегда актуальный словарь карт
+MAPS = load_all_maps()
 
 
-def load_map_from_file(filepath, is_fortress=None):
-    """Создаёт структуру карты из файла coordinates.txt / _coordinates.txt.
+def reload_maps():
+    """Перечитать карты с диска."""
+    global MAPS
+    MAPS = load_all_maps()
+    return MAPS
 
-    Первые 4 точки — оборона (по приоритету), следующие 4 точки — атака (по приоритету).
-    """
-    coords = parse_coordinates_file(filepath)
-    fname = os.path.basename(filepath)
-    if is_fortress is None:
-        is_fortress = fname.startswith("_")
 
-    if len(coords) >= 8:
-        def_coords = coords[:4]
-        atk_coords = coords[4:8]
-    elif len(coords) > 0:
-        half = len(coords) // 2
-        def_coords = coords[:half]
-        atk_coords = coords[half:]
-    else:
-        def_coords = []
-        atk_coords = []
-
-    type_str = "Крепость" if is_fortress else "Обычная карта"
-    return {
-        "name": f"{type_str} ({fname})",
-        "map_name": fname,
-        "is_fortress": is_fortress,
-        "defense_positions": def_coords,
-        "attack_positions": atk_coords,
-        "source_file": filepath,
+def save_map(key, map_dict):
+    """Сохранить или обновить карту в config/maps.json."""
+    all_maps = load_all_maps()
+    all_maps[key] = {
+        "name": map_dict.get("name", key),
+        "map_name": map_dict.get("map_name", key),
+        "is_fortress": bool(map_dict.get("is_fortress", False)),
+        "defense_positions": [list(p) for p in map_dict.get("defense_positions", [])],
+        "attack_positions": [list(p) for p in map_dict.get("attack_positions", [])],
     }
+    config.save_json(config.MAPS_FILE, all_maps)
+    reload_maps()
+    return all_maps[key]
 
 
 def get_map(key):
     """Получить данные карты по ключу, номеру или названию."""
     if not key:
         return None
+    maps_dict = reload_maps()
     k_str = str(key).strip().lower()
-    keys = list(MAPS.keys())
+    keys = list(maps_dict.keys())
     if k_str.isdigit() and 1 <= int(k_str) <= len(keys):
-        return MAPS[keys[int(k_str) - 1]]
-    if k_str in MAPS:
-        return MAPS[k_str]
-    for k, v in MAPS.items():
+        return maps_dict[keys[int(k_str) - 1]]
+    if k_str in maps_dict:
+        return maps_dict[k_str]
+    for k, v in maps_dict.items():
         if k_str in (v["name"].lower(), v["map_name"].lower()):
             return v
-    for k, v in MAPS.items():
+    for k, v in maps_dict.items():
         if k_str in v["map_name"].lower().replace("map ", ""):
             return v
     return None

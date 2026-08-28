@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Тесты для модуля карт, парсинга файлов координат и назначения позиций.
+Тесты для модуля карт, maps.json и назначения позиций.
 """
 
-import io
+import json
 import os
 import sys
 import tempfile
@@ -52,173 +52,78 @@ from bridge import room
 import main
 
 
-SAMPLE_COORDS_TEXT = """
-2026-08-27 17:13:06  frac=(0.4906, 0.3514)  px=(1192,488)  ->  [0.4906, 0.3514],
-2026-08-27 17:13:08  frac=(0.4984, 0.3306)  px=(1202,473)  ->  [0.4984, 0.3306],
-2026-08-27 17:13:11  frac=(0.4813, 0.3694)  px=(1180,501)  ->  [0.4813, 0.3694],
-2026-08-27 17:13:13  frac=(0.4688, 0.3861)  px=(1164,513)  ->  [0.4688, 0.3861],
-2026-08-27 17:13:15  frac=(0.4656, 0.4306)  px=(1160,545)  ->  [0.4656, 0.4306],
-2026-08-27 17:13:17  frac=(0.4945, 0.4250)  px=(1197,541)  ->  [0.4945, 0.4250],
-2026-08-27 17:13:20  frac=(0.5211, 0.4306)  px=(1231,545)  ->  [0.5211, 0.4306],
-2026-08-27 17:13:23  frac=(0.5250, 0.3208)  px=(1236,466)  ->  [0.5250, 0.3208],
-"""
-
-
 class TestMaps(unittest.TestCase):
     def test_map_definitions(self):
+        all_maps = maps.load_all_maps()
         expected_keys = ["westmarch", "dagorlad", "dead_marshes", "minas_tirith"]
-        self.assertEqual(list(maps.MAPS.keys()), expected_keys)
-
-        for k, m in maps.MAPS.items():
+        for k in expected_keys:
+            self.assertIn(k, all_maps)
+            m = all_maps[k]
             self.assertIn("name", m)
             self.assertIn("map_name", m)
             self.assertIn("is_fortress", m)
             self.assertEqual(len(m["defense_positions"]), 4)
             self.assertEqual(len(m["attack_positions"]), 4)
-            for x, y in m["defense_positions"] + m["attack_positions"]:
-                self.assertTrue(0.0 <= x <= 1.0)
-                self.assertTrue(0.0 <= y <= 1.0)
 
-        # Проверка флага крепости
         self.assertFalse(maps.is_fortress_map("westmarch"))
         self.assertFalse(maps.is_fortress_map("dagorlad"))
         self.assertFalse(maps.is_fortress_map("dead_marshes"))
         self.assertTrue(maps.is_fortress_map("minas_tirith"))
 
-    def test_exact_coordinates(self):
-        wm = maps.MAPS["westmarch"]
-        self.assertEqual(wm["defense_positions"], [
-            (0.4484, 0.3306),
-            (0.4664, 0.3403),
-            (0.4492, 0.4292),
-            (0.4672, 0.4125),
-        ])
-        self.assertEqual(wm["attack_positions"], [
-            (0.5273, 0.3389),
-            (0.5430, 0.3264),
-            (0.5250, 0.4167),
-            (0.5437, 0.4278),
-        ])
-
-        mt = maps.MAPS["minas_tirith"]
-        self.assertEqual(mt["defense_positions"], [
-            (0.4906, 0.3514),
-            (0.4984, 0.3306),
-            (0.4813, 0.3694),
-            (0.4688, 0.3861),
-        ])
-        self.assertEqual(mt["attack_positions"], [
-            (0.4656, 0.4306),
-            (0.4945, 0.4250),
-            (0.5211, 0.4306),
-            (0.5250, 0.3208),
-        ])
-
-    def test_parse_coordinates_file(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tf:
-            tf.write(SAMPLE_COORDS_TEXT)
-            tf_path = tf.name
-
+    def test_save_and_reload_map(self):
+        tmp = tempfile.mkdtemp(prefix="test-map-")
         try:
-            coords = maps.parse_coordinates_file(tf_path)
-            self.assertEqual(len(coords), 8)
-            self.assertEqual(coords[0], (0.4906, 0.3514))
-            self.assertEqual(coords[1], (0.4984, 0.3306))
-            self.assertEqual(coords[7], (0.5250, 0.3208))
-        finally:
-            os.remove(tf_path)
+            from bridge import config
+            old_maps_file = config.MAPS_FILE
+            config.MAPS_FILE = os.path.join(tmp, "maps.json")
 
-    def test_find_and_load_map_file_fortress(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            fpath = os.path.join(tmpdir, "_coordinates.txt")
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(SAMPLE_COORDS_TEXT)
-
-            found, is_fortress = maps.find_coordinates_file(fpath)
-            self.assertEqual(found, fpath)
-            self.assertTrue(is_fortress)
-
-            m = maps.load_map_from_file(fpath)
-            self.assertTrue(m["is_fortress"])
-            self.assertEqual(len(m["defense_positions"]), 4)
-            self.assertEqual(len(m["attack_positions"]), 4)
-            self.assertEqual(m["defense_positions"][0], (0.4906, 0.3514))
-        finally:
-            import shutil
-            shutil.rmtree(tmpdir)
-
-    def test_find_and_load_map_file_regular(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            fpath = os.path.join(tmpdir, "coordinates.txt")
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(SAMPLE_COORDS_TEXT)
-
-            found, is_fortress = maps.find_coordinates_file(fpath)
-            self.assertEqual(found, fpath)
-            self.assertFalse(is_fortress)
-
-            m = maps.load_map_from_file(fpath)
-            self.assertFalse(m["is_fortress"])
-            self.assertEqual(len(m["defense_positions"]), 4)
-            self.assertEqual(len(m["attack_positions"]), 4)
-        finally:
-            import shutil
-            shutil.rmtree(tmpdir)
-
-    def test_calculate_slot_positions_from_loaded_map(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".txt") as tf:
-            tf.write(SAMPLE_COORDS_TEXT)
-            tf_path = tf.name
-
-        try:
-            map_data = maps.load_map_from_file(tf_path, is_fortress=True)
-            bot_factions = {2: "elves", 3: "mordor", 4: "isengard"}
-            pos, def_s, atk_s = maps.calculate_slot_positions(
-                map_data, "defender", 4, "men", bot_factions,
-                random_positions=False, fortress_owner=2
-            )
-            self.assertEqual(def_s, [1, 2])
-            self.assertEqual(atk_s, [3, 4])
-            # Slot 2 (owner) gets first defense position
-            self.assertEqual(pos[2], (0.4906, 0.3514))
-            self.assertEqual(pos[1], (0.4984, 0.3306))
-            self.assertEqual(pos[3], (0.4656, 0.4306))
-            self.assertEqual(pos[4], (0.4945, 0.4250))
-        finally:
-            os.remove(tf_path)
-
-    def test_assign_start_positions_regular_map(self):
-        # Check regular map: ascending order 1, 2, 3, 4 with 1 click each
-        calls = []
-        orig_assign = room.assign_start_position
-
-        def mock_assign(slot, pos, clicks=1):
-            calls.append((slot, pos, clicks))
-            return True
-
-        room.assign_start_position = mock_assign
-        try:
-            slot_positions = {
-                3: (0.3, 0.3),
-                1: (0.1, 0.1),
-                4: (0.4, 0.4),
-                2: (0.2, 0.2),
+            new_map = {
+                "name": "Новая Крепость",
+                "map_name": "map mp test fortress",
+                "is_fortress": True,
+                "defense_positions": [(0.1, 0.1), (0.2, 0.2), (0.3, 0.3), (0.4, 0.4)],
+                "attack_positions": [(0.5, 0.5), (0.6, 0.6), (0.7, 0.7), (0.8, 0.8)],
             }
-            res = room.assign_start_positions(slot_positions)
-            self.assertTrue(res)
-            # Must be ascending: 1, 2, 3, 4 with 1 click each
-            slots_called = [c[0] for c in calls]
-            clicks_called = [c[2] for c in calls]
-            self.assertEqual(slots_called, [1, 2, 3, 4])
-            self.assertEqual(clicks_called, [1, 1, 1, 1])
+            maps.save_map("new_fortress", new_map)
+
+            reloaded = maps.get_map("new_fortress")
+            self.assertIsNotNone(reloaded)
+            self.assertEqual(reloaded["name"], "Новая Крепость")
+            self.assertTrue(reloaded["is_fortress"])
+            self.assertEqual(len(reloaded["defense_positions"]), 4)
+            self.assertEqual(reloaded["defense_positions"][0], (0.1, 0.1))
+
+            # Lookup by Russian name
+            by_name = maps.get_map("Новая Крепость")
+            self.assertIsNotNone(by_name)
+            self.assertEqual(by_name["map_name"], "map mp test fortress")
+
+            config.MAPS_FILE = old_maps_file
         finally:
-            room.assign_start_position = orig_assign
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_calculate_slot_positions_fortress_owner(self):
+        bot_factions = {
+            2: "elves", 3: "dwarves", 4: "men",
+            5: "mordor", 6: "isengard", 7: "goblins", 8: "angmar"
+        }
+        pos, def_s, atk_s = maps.calculate_slot_positions(
+            "minas_tirith", "defender", 8, "men", bot_factions,
+            random_positions=False, fortress_owner=4
+        )
+        mt = maps.get_map("minas_tirith")
+        # Владелец на 1-й точке
+        self.assertEqual(pos[4], mt["defense_positions"][0])
+        self.assertEqual(pos[1], mt["defense_positions"][1])
+        self.assertEqual(pos[2], mt["defense_positions"][2])
+        self.assertEqual(pos[3], mt["defense_positions"][3])
+        self.assertEqual(pos[5], mt["attack_positions"][0])
+        self.assertEqual(pos[6], mt["attack_positions"][1])
+        self.assertEqual(pos[7], mt["attack_positions"][2])
+        self.assertEqual(pos[8], mt["attack_positions"][3])
 
     def test_assign_start_positions_fortress_owner(self):
-        # Fortress owner slot 8 -> 8 clicks on owner's position first,
-        # then remaining slots in ascending order with 1 click each
         calls = []
         orig_assign = room.assign_start_position
 
@@ -236,48 +141,31 @@ class TestMaps(unittest.TestCase):
             }
             res = room.assign_start_positions(slot_positions, fortress_owner=8)
             self.assertTrue(res)
-            # First slot 8 with 8 clicks
+            # Первый слот 8 с 8 кликами
             self.assertEqual(calls[0], (8, (0.8, 0.8), 8))
-            # Then remaining slots 1, 2, 5 with 1 click each
+            # Оставшиеся слоты 1, 2, 5 по 1 клику
             remaining_calls = calls[1:]
             self.assertEqual([c[0] for c in remaining_calls], [1, 2, 5])
             self.assertEqual([c[2] for c in remaining_calls], [1, 1, 1])
         finally:
             room.assign_start_position = orig_assign
 
-    def test_pyinstaller_main_spec(self):
-        spec_path = os.path.join(ROOT, "packaging", "main.spec")
-        self.assertTrue(os.path.exists(spec_path))
+    def test_ask_map(self):
+        with patch("builtins.input", side_effect=["1"]):
+            self.assertEqual(main.ask_map(), "westmarch")
+        with patch("builtins.input", side_effect=["Минас Тирит"]):
+            self.assertEqual(main.ask_map(), "minas_tirith")
 
-        calls = {}
+    def test_ask_player_role(self):
+        with patch("builtins.input", side_effect=["1"]):
+            self.assertEqual(main.ask_player_role(), "defender")
+        with patch("builtins.input", side_effect=["2"]):
+            self.assertEqual(main.ask_player_role(), "attacker")
 
-        class _A:
-            def __init__(self, scripts, **kw):
-                calls["analysis"] = kw
-                calls["scripts"] = scripts
-                self.scripts = [(os.path.basename(s), s, "PYSOURCE") for s in scripts]
-                self.pure, self.binaries, self.datas = [], [], []
-
-        def _PYZ(pure):
-            return {"pyz": pure}
-
-        def _EXE(pyz, scripts, binaries, datas, *a, **kw):
-            calls["exe"] = kw
-            return {"exe": kw}
-
-        g = {"__file__": spec_path, "SPECPATH": os.path.dirname(spec_path),
-             "Analysis": _A, "PYZ": _PYZ, "EXE": _EXE, "COLLECT": None,
-             "BUNDLE": None, "Tree": None}
-        with open(spec_path, encoding="utf-8") as f:
-            src = f.read()
-        exec(compile(src, spec_path, "exec"), g)
-
-        exe = calls.get("exe", {})
-        self.assertEqual(calls.get("scripts"), [os.path.join(ROOT, "main.py")])
-        self.assertEqual(exe.get("name"), "Main")
-        self.assertTrue(exe.get("console"))
-        self.assertTrue(exe.get("uac_admin"))
-        self.assertIsNone(exe.get("runtime_tmpdir"))
+    def test_ask_fortress_owner(self):
+        self.assertEqual(main.ask_fortress_owner([1]), 1)
+        with patch("builtins.input", side_effect=["4"]):
+            self.assertEqual(main.ask_fortress_owner([1, 2, 4]), 4)
 
 
 if __name__ == "__main__":

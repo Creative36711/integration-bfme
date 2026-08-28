@@ -108,21 +108,23 @@ def ask_bot_factions(total_players):
 
 def ask_map():
     """Какая карта."""
+    maps_dict = maps.reload_maps()
+    keys = list(maps_dict.keys())
     log("На какой карте происходит игра?")
-    keys = list(maps.MAPS.keys())
     for i, k in enumerate(keys, 1):
-        m = maps.MAPS[k]
-        log(f"  {i}. {m['name']} ({m['map_name']})")
+        m = maps_dict[k]
+        fort_tag = " [КРЕПОСТЬ]" if m.get("is_fortress") else ""
+        log(f"  {i}. {m['name']}{fort_tag} ({m['map_name']})")
     while True:
         s = input("> ").strip().lower()
         if s.isdigit() and 1 <= int(s) <= len(keys):
             return keys[int(s) - 1]
         for k in keys:
-            m = maps.MAPS[k]
+            m = maps_dict[k]
             if s in (k, m['name'].lower(), m['map_name'].lower()):
                 return k
         for k in keys:
-            m = maps.MAPS[k]
+            m = maps_dict[k]
             if s in m['map_name'].lower().replace("map ", ""):
                 return k
         log("  Введите номер или название карты.")
@@ -330,7 +332,7 @@ def main(argv=None):
     ap.add_argument("--exe", help="explicit game/launcher path")
     ap.add_argument("--arg", action="append", dest="args",
                     help="extra launch arg (repeatable)")
-    ap.add_argument("--coords", help="explicit coordinates file path (_coordinates.txt or coordinates.txt)")
+    ap.add_argument("--map", help="ключ или имя карты из config/maps.json")
     ap.add_argument("--elevated", action="store_true",
                     help="launch through UAC prompt")
     ap.add_argument("--stop-at", choices=["lan", "create"], default="create",
@@ -367,15 +369,14 @@ def main(argv=None):
     faction = ask_faction()
     bot_factions = ask_bot_factions(total_players)
 
-    # Поиск файла координат (_coordinates.txt / coordinates.txt)
-    coords_file, is_fortress_file = maps.find_coordinates_file(args.coords)
-    if coords_file:
-        map_data = maps.load_map_from_file(coords_file, is_fortress=is_fortress_file)
-        is_fortress = is_fortress_file
-        log(f"[setup] найден файл координат: {coords_file} "
-            + ("(КРЕПОСТЬ)" if is_fortress else "(обычная карта)"))
-        log(f"[setup]   загружено: {len(map_data['defense_positions'])} точек обороны, "
-            f"{len(map_data['attack_positions'])} точек атаки")
+    # Выбор карты (из config/maps.json)
+    if getattr(args, "map", None):
+        map_key = args.map
+        map_data = maps.get_map(map_key)
+        if not map_data:
+            log(f"ОШИБКА: карта '{map_key}' не найдена в config/maps.json", file=sys.stderr)
+            return 1
+        is_fortress = maps.is_fortress_map(map_data)
     else:
         map_key = ask_map()
         map_data = maps.get_map(map_key)
