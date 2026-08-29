@@ -27,19 +27,40 @@
 
 import json
 import logging
+import os
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from . import color_analyzer
-from .config import DetectorConfig, TEMPLATE_FILES, TEMPLATES_DIR
-from . import icon_finder
-from . import player_matcher
-from .screen_monitor import ScoreScreenMonitor
+# Добавляем корень проекта в sys.path, чтобы можно было импортировать
+# bridge.log без privileged windows-only deps.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-log = logging.getLogger("match_detector.detector")
+try:
+    from bridge.log import log as _bridge_log
+    _OWN_LOG: Optional[Callable] = _bridge_log
+except Exception:  # noqa: BLE001
+    _OWN_LOG = None
+_stdlog = logging.getLogger("match_detector.detector")
+
+
+def log(*args, **kwargs):
+    """Печатать диагностику детектора в stdout (как делает main.py).
+
+    bridge.log.log(...) умеет принимать file=sys.stderr и пр., что удобно для
+    пометки WARNING в логе пользователя. Если bridge импортировать нельзя —
+    падаем в стандартный Python logger, который лучше чем ничего.
+    """
+    if _OWN_LOG is not None:
+        _OWN_LOG(*args, **kwargs)
+    else:
+        msg = " ".join(str(a) for a in args)
+        _stdlog.warning(msg)
 
 BLACK_FRAME_MEAN = 6.0
 BLACK_FRAME_BRIGHT_RATIO = 0.0005
