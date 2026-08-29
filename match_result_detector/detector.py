@@ -41,6 +41,13 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# Импорты модулей match_result_detector (не Windows-only, можно везде).
+from . import color_analyzer
+from . import icon_finder
+from . import player_matcher
+from .config import DetectorConfig, TEMPLATE_FILES, TEMPLATES_DIR
+from .screen_monitor import ScoreScreenMonitor
+
 try:
     from bridge.log import log as _bridge_log
     _OWN_LOG: Optional[Callable] = _bridge_log
