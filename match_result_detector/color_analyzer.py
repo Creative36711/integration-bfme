@@ -252,20 +252,23 @@ def find_highlighted_line_endpoint(frame, color_name: str, cfg,
     # в полосе ±y_band по Y И с x, близким к cx иконки (в пределах
     # x_close = y_band). Это реальная геометрия конца линии: на графике
     # линия приходит к иконке справа, последний «цветной» пиксель —
-    # за 1-30 px до центра. Берём самый ПРАВЫЙ пиксель маски, попавший
-    # в полосу (cy ± y_band) И (cx - y_band). Это ключевое исправление
-    # регрессии «Игрок SURRENDER» в 1v1: глобальный max-x брал шумовый
-    # пиксель в y=800 вне зоны иконки (y=276); теперь берём только пиксель
-    # у самой иконки.
+    # за 1-30 px до центра. ИЗ ИКОНОК выбираем НЕ по «самому правому
+    # пикселю», а по ВЕСУ (количеству пикселей маски в полосе):
+    #   * СВОЯ линия для иконки — идёт к ней и заканчивается, плотность
+    #     пикселей в полосе ВЫСОКАЯ (десятки и сотни);
+    #   * ЧУЖАЯ («проходящая») линия — пересекает полосу иконки
+    #     транзитом, плотность пикселей НИЗКАЯ (единицы-десятки).
+    # Поэтому иконка с НАИБОЛЬШИМ весом = та, к которой реально пришла
+    # линия. После выбора иконки берём самый правый пиксель в её полосе
+    # — это и есть конец линии у иконки.
     if near_icons:
         best_pt = None
-        best_x = -1
+        best_score = -1.0
+        END_GAP = 80.0       # max px from cx of icon to x_max of line
+        MAX_Y_DIST = 60.0    # max |y_median - icy| for the line to belong to icon
         for ic in near_icons:
             icx = ic["cx"] - x0
             icy = ic["cy"] - y0
-            # Полоса: y в (icy ± y_band) AND x в (icx - y_band .. icx + 10).
-            # Последнее: точка линии должна быть СПРАВА от середины графика
-            # и не дальше y_band пикселей ЛЕВЕЕ центра иконки.
             in_band = (
                 (np.abs(ys - icy) <= y_band)
                 & (xs >= icx - y_band)
@@ -273,11 +276,27 @@ def find_highlighted_line_endpoint(frame, color_name: str, cfg,
             )
             if not in_band.any():
                 continue
-            xs_b = xs[in_band]
-            j = int(np.argmax(xs_b))
-            if xs_b[j] > best_x:
-                best_x = int(xs_b[j])
-                best_pt = (int(x0 + xs_b[j]), int(y0 + ys[in_band][j]))
+            xs_b = xs[in_band]; ys_b = ys[in_band]
+            x_max_in_band = int(xs_b.max())
+            # Filter 1: line must have REACHED this icon (not a passing line
+            # that stops well before the icon).
+            if (icx - x_max_in_band) > END_GAP:
+                continue
+            # Filter 2: the pixels in this band must be near the icon's y.
+            # A 'passing' line crosses another player's band at a y far
+            # from that band's icon (e.g. white passing through victory
+            # band at y=330, while victory icon is at y=276). The OWN
+            # line reaches the icon -> median y in band ≈ icon's y.
+            y_median = float(np.median(ys_b))
+            y_dist = abs(y_median - icy)
+            if y_dist > MAX_Y_DIST:
+                continue
+            # Score: prefer (a) closer to icon in x AND (b) closer in y.
+            score = (END_GAP - (icx - x_max_in_band)) + (MAX_Y_DIST - y_dist)
+            if score > best_score:
+                best_score = score
+                j = int(np.argmax(xs_b))
+                best_pt = (int(x0 + xs_b[j]), int(y0 + ys_b[j]))
         if best_pt is None:
             return None, None, []
         x_end, y_end = best_pt
