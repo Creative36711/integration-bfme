@@ -81,7 +81,7 @@ FACTION_COLORS = {
     "men":      "blue",     # Люди — синий
     "elves":    "green",    # Эльфы — зелёный
     "dwarves":  "yellow",   # Гномы — жёлтый
-    "isengard": "black",    # Изенгард — чёрный
+    "isengard": "white",    # Изенгард — БЕЛЫЙ (чёрный не видно на тёмном графике)
     "mordor":   "red",      # Мордор — красный
     "goblins":  "orange",   # Гоблины — оранжевый
     "angmar":   "purple",   # Ангмар — фиолетовый
