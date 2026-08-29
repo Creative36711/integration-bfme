@@ -505,7 +505,8 @@ class MatchResultDetector:
                 f = base_frame
 
             x_end, y_end, _pixels = color_analyzer.find_highlighted_line_endpoint(
-                f, color, self._cfg, exclude_icons=icons)
+                f, color, self._cfg, exclude_icons=icons, near_icons=icons,
+                y_band=120.0)
             if x_end is not None:
                 ic, dist = color_analyzer.nearest_icon(
                     x_end, y_end, icons,

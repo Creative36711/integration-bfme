@@ -139,7 +139,8 @@ def classify_pixel(rgb, color_names, cfg) -> Optional[str]:
 # ---------------------------------------------------------------------------
 def find_highlighted_line_endpoint(frame, color_name: str, cfg,
                                    exclude_icons=None, bright_only=False,
-                                   max_x: Optional[int] = None):
+                                   max_x: Optional[int] = None,
+                                   near_icons=None, y_band: float = 80.0):
     """Найти правый конец яркой линии заданного цвета.
 
     После клика по слоту его линия становится НАСЫЩЕННОЙ и ярче dim-фона.
@@ -160,12 +161,29 @@ def find_highlighted_line_endpoint(frame, color_name: str, cfg,
             которых свечение исключается из маски.
         bright_only: True — дополнительно требовать яркости (v>98), чтобы
             отсечь тёмные тени; для dim-линий ставить False.
+        max_x: если задан, ограничить поиск только пикселями с x <= max_x
+            (полезно, если линия точно левее некого ориентира).
+        near_icons: список dict {"cx", "cy"} — иконки победы/поражения.
+            Если задан, возвращает конец линии, ближайший к ОДНОЙ из этих
+            иконок в полосе ±y_band px по Y (а не глобальный max-x). Это
+            ключевое исправление: раньше шумовый пиксель в нижней части
+            графика (например y=800 при chart_roi до y=815) перебивал
+            настоящий конец линии у иконки сверху (y≈276) — детектор
+            помечал игрока как SURRENDER, хотя линия была и дошла до иконки.
+        y_band: полоса по Y вокруг иконки при near_icons != None.
 
     Returns:
         (x_end, y_end, pixels) или (None, None, []).
     """
     h, w = frame.shape[:2]
-    refs = chart_refs_for_color(color_name, vivid=True)
+    # ОБЪЕДИНЯЕМ dim + vivid эталоны: dim-вариант ловит обычную нитку
+    # (включая slot 1, который НЕ кликался — у него линия приглушённая,
+    # до vivid-эталона далеко: для белого distance=131 > tolerance 58),
+    # vivid-вариант ловит подсвеченную (после клика по слоту в «Рейтинге»)
+    # яркую нитку. Без объединения детектор пропускает любой из двух
+    # типов линий.
+    refs = (chart_refs_for_color(color_name, vivid=False)
+            + chart_refs_for_color(color_name, vivid=True))
     if not refs:
         return None, None, []
 
@@ -190,7 +208,20 @@ def find_highlighted_line_endpoint(frame, color_name: str, cfg,
         match &= (mx >= 98)
     if not match.any():
         return None, None, []
-    match &= (sat >= SAT_THRESHOLD)
+
+    # БЕЛЫЕ/СЕРЫЕ линии (Изенгард): vivid-эталон (200,200,200) имеет
+    # sat == 0, а реальная нитка (127,127,127)..(170,170,170) — sat 0..5.
+    # Фильтр sat>=25 их отсекает полностью, и slot помечается SURRENDER
+    # хотя линия есть. ИСПРАВЛЕНИЕ: если ВСЕ эталоны цвета имеют
+    # sat < 10 (белый/серый) — НЕ применяем порог sat, берём только
+    # яркость (mx >= 80). Иначе (насыщенные цвета) — фильтр как раньше.
+    refs_sat = np.array([max(int(ref[0]), int(ref[1]), int(ref[2]))
+                         - min(int(ref[0]), int(ref[1]), int(ref[2]))
+                         for ref in refs], dtype=np.int32)
+    if refs_sat.max() < 10:
+        match &= (mx >= 80)
+    else:
+        match &= (sat >= SAT_THRESHOLD)
 
     # Исключить свечение вокруг иконок.
     if exclude_icons:
@@ -214,6 +245,45 @@ def find_highlighted_line_endpoint(frame, color_name: str, cfg,
         inside = xs <= max_x - x0
         if inside.any():
             xs = xs[inside]; ys = ys[inside]
+        if len(xs) == 0:
+            return None, None, []
+
+    # Если передали near_icons — для КАЖДОЙ иконки ищем правый конец линии
+    # в полосе ±y_band по Y И с x, близким к cx иконки (в пределах
+    # x_close = y_band). Это реальная геометрия конца линии: на графике
+    # линия приходит к иконке справа, последний «цветной» пиксель —
+    # за 1-30 px до центра. Берём самый ПРАВЫЙ пиксель маски, попавший
+    # в полосу (cy ± y_band) И (cx - y_band). Это ключевое исправление
+    # регрессии «Игрок SURRENDER» в 1v1: глобальный max-x брал шумовый
+    # пиксель в y=800 вне зоны иконки (y=276); теперь берём только пиксель
+    # у самой иконки.
+    if near_icons:
+        best_pt = None
+        best_x = -1
+        for ic in near_icons:
+            icx = ic["cx"] - x0
+            icy = ic["cy"] - y0
+            # Полоса: y в (icy ± y_band) AND x в (icx - y_band .. icx + 10).
+            # Последнее: точка линии должна быть СПРАВА от середины графика
+            # и не дальше y_band пикселей ЛЕВЕЕ центра иконки.
+            in_band = (
+                (np.abs(ys - icy) <= y_band)
+                & (xs >= icx - y_band)
+                & (xs <= icx + 10)
+            )
+            if not in_band.any():
+                continue
+            xs_b = xs[in_band]
+            j = int(np.argmax(xs_b))
+            if xs_b[j] > best_x:
+                best_x = int(xs_b[j])
+                best_pt = (int(x0 + xs_b[j]), int(y0 + ys[in_band][j]))
+        if best_pt is None:
+            return None, None, []
+        x_end, y_end = best_pt
+        pixels = list(zip(xs.tolist(), ys.tolist()))
+        return x_end, y_end, pixels
+
     idx = int(np.argmax(xs))
     x_end = int(x0 + xs[idx])
     y_end = int(y0 + ys[idx])
