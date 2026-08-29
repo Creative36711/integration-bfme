@@ -415,6 +415,86 @@ def _trace_mean_color(pixels):
     return tuple(int(v) for v in np.mean(arr, axis=0))
 
 
+def _line_color_near_icon(frame, cx, cy, players, cfg, scale=1.0):
+    """Определить цвет ЛИНИИ победителя через topmost-пиксель per color.
+
+    На экране «Счёт» 7-минутного графика у каждого игрока своя линия растёт
+    слева направо. Самая «верхняя» (с наименьшим y_max по столбцам) — это
+    линия победителя: её конец увенчан victory-иконкой. Алгоритм:
+      * берём chart_roi в пикселях, исключая halo victory (cx - 80..cx),
+        чтобы не ловить светлое свечение монеты;
+      * по y стартуем НЕ ВЫШЕ cy + 50 — это отрезает halo и шапку;
+      * для каждого цвета игрока строим маску dim+vivid эталонов с
+        TIGHT допуском 18 RGB-еврик. distance + sat >= 18, чтобы выкинуть
+        серый фон;
+      * победитель — та маска, чей topmost (min y) пиксель — выше всех
+        (наименьший y_global) из всех подходящих.
+    """
+    h, w = frame.shape[:2]
+    s = float(scale) * float(cfg.scale_for(w, h))
+    halo_x = int(80.0 * s)   # px от cx victory — чтобы не лезть в свечение
+    halo_y_down = 50         # ниже victory эта величина skip гарантирует,
+                             # что мы смотрим УЖЕ на хвост линии, не halo
+
+    fx0, fy0, fx1, fy1 = cfg.chart_roi
+    gx0 = int(fx0 * w); gy0 = int(fy0 * h); gx1 = int(fx1 * w); gy1 = int(fy1 * h)
+    gx1 = min(gx1, int(cx) - halo_x)
+    y_start = int(cy) + halo_y_down
+    if gx1 <= gx0 or y_start >= gy1:
+        return {"player": None, "side": "left", "best": None, "mean_rgb": None}
+
+    region = frame[y_start:gy1, gx0:gx1, :].astype(np.int32)
+    sat = (region.max(axis=2) - region.min(axis=2))
+    sat_ok = sat >= 18
+
+    results = []
+    names = [p.get("color") for p in players]
+    for idx, name in enumerate(names):
+        if not name:
+            continue
+        refs = chart_refs_for_color(name) + chart_refs_for_color(name, vivid=True)
+        if not refs:
+            continue
+        ref_arr = np.array(refs, dtype=np.int32)
+        d = np.sqrt(((region[..., 0][..., None] - ref_arr[:, 0]) ** 2
+                     + (region[..., 1][..., None] - ref_arr[:, 1]) ** 2
+                     + (region[..., 2][..., None] - ref_arr[:, 2]) ** 2
+                     ).min(axis=-1))
+        ok = (d <= 18) & sat_ok
+        if not ok.any():
+            continue
+        ys, xs = np.where(ok)
+        top_y_local = int(ys.min())
+        top_y_global = top_y_local + y_start
+        sample_x = int(xs[ys == top_y_local].mean())
+        sample = tuple(int(v) for v in region[top_y_local, sample_x])
+        results.append((idx, name, top_y_global, int(ok.sum()), sample))
+
+    if not results:
+        return {"player": None, "side": "left", "best": None, "mean_rgb": None}
+    # Сначала фильтруем: topmost должен быть на РЕАЛЬНОЙ высоте графика
+    # (не в самой нижней части, иначе это будет «кепка» линии каждого).
+    # Берём того, у кого topmost_y_global наименьший И при этом topmost
+    # не оторвался от основной массы пикселей (>10 пикселей найдено).
+    filtered = [r for r in results if r[3] >= 10 and r[2] < int(cy) + 200]
+    if not filtered:
+        filtered = [r for r in results if r[3] >= 10]
+    if not filtered:
+        return {"player": None, "side": "left", "best": None, "mean_rgb": None}
+    winner = min(filtered, key=lambda t: t[2])
+    winner_idx, winner_name, top_y_g, _, sample = winner
+    return {
+        "player": int(winner_idx), "side": "left",
+        "best": {"topmost_y_global": top_y_g,
+                 "sample_rgb": sample,
+                 "competitors": [
+                     {"name": r[1], "topmost_y_global": r[2],
+                      "pixels": r[3], "sample": r[4]} for r in filtered]},
+        "mean_rgb": sample,
+    }
+
+
+
 def analyze_line_at_icon(frame, cx, cy, players, cfg, scale=1.0):
     """Определить владельца линии у иконки (статичный кадр, без кликов).
 
