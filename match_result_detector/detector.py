@@ -35,8 +35,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-# Добавляем корень проекта в sys.path, чтобы можно было импортировать
-# bridge.log без privileged windows-only deps.
+# Корень проекта нужен для импорта bridge.log (он не под Windows-only).
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -48,26 +47,45 @@ from . import player_matcher
 from .config import DetectorConfig, TEMPLATE_FILES, TEMPLATES_DIR
 from .screen_monitor import ScoreScreenMonitor
 
+# Модульный LOGGER (а не функция!). Все вызовы в коде ниже — это
+# стандартный Python API: log.info(...), log.warning(...), log.exception(...).
+# Чтобы вывод попадал в stdout/stderr как `[match] ...` строки (как делает
+# main.py), прицепим handler, который маршрутизирует через bridge.log.log().
+log = logging.getLogger("match_detector.detector")
+
+_BRIDGE_LOG = None
 try:
-    from bridge.log import log as _bridge_log
-    _OWN_LOG: Optional[Callable] = _bridge_log
+    from bridge.log import log as _bridge_log_func  # noqa: F811
+    _BRIDGE_LOG = _bridge_log_func
 except Exception:  # noqa: BLE001
-    _OWN_LOG = None
-_stdlog = logging.getLogger("match_detector.detector")
+    _BRIDGE_LOG = None
 
 
-def log(*args, **kwargs):
-    """Печатать диагностику детектора в stdout (как делает main.py).
+class _BridgeLogHandler(logging.Handler):
+    def emit(self, record):  # noqa: D401
+        try:
+            msg = self.format(record)
+        except Exception:  # noqa: BLE001
+            return
+        stream = sys.stderr if record.levelno >= logging.WARNING else sys.stdout
+        if _BRIDGE_LOG is None:
+            try:
+                print(msg, file=stream)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        try:
+            _BRIDGE_LOG(msg, file=stream)
+        except Exception:  # noqa: BLE001
+            pass
 
-    bridge.log.log(...) умеет принимать file=sys.stderr и пр., что удобно для
-    пометки WARNING в логе пользователя. Если bridge импортировать нельзя —
-    падаем в стандартный Python logger, который лучше чем ничего.
-    """
-    if _OWN_LOG is not None:
-        _OWN_LOG(*args, **kwargs)
-    else:
-        msg = " ".join(str(a) for a in args)
-        _stdlog.warning(msg)
+
+if not any(isinstance(h, _BridgeLogHandler) for h in log.handlers):
+    _h = _BridgeLogHandler(level=logging.INFO)
+    _h.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(_h)
+log.propagate = False
+
 
 BLACK_FRAME_MEAN = 6.0
 BLACK_FRAME_BRIGHT_RATIO = 0.0005
@@ -200,9 +218,6 @@ class MatchResultDetector:
             self.start_monitoring(timeout=self._cfg.monitor_timeout)
         self._result_event.wait(timeout=timeout)
         if self._result is None:
-            # Таймаут: монитор ещё жив (без внешнего таймаута) или уже
-            # остановлен, и результат не появился. Возвращаем UNKNOWN, а не
-            # None, чтобы вызывающий не падал на распаковке результата.
             return self._unknown("no result (monitor stopped or timeout)")
         return self._result
 
@@ -468,10 +483,6 @@ class MatchResultDetector:
             но НЕ дошла ни до одной иконки (сдался/вышел).
         """
         base_frame = frame
-        # Сюда сначала собираем ОДНОЗНАЧНЫЕ привязки (только в этой иконке
-        # оказывается x_end по нашему max_x_gap). Если же ИКОНКА оказалась
-        # занята чужим слотом — привязка помещается в `conflict_slots` и
-        # будет устранена после полного прохода.
         resolved = {}            # slot -> {"kind", "icon", "dist", "color"}
         surrendered_slots = set()  # slot, чья линия НЕ дошла до иконки (сдался)
         max_xy = 160.0
@@ -667,7 +678,6 @@ class MatchResultDetector:
 
     # --- отладка -------------------------------------------------------
     def _save_debug(self, frame, assignments, result):
-        import os
         os.makedirs(self._cfg.debug_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         path = os.path.join(self._cfg.debug_dir, f"frame_{ts}.png")
