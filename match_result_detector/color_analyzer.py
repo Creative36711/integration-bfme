@@ -415,40 +415,43 @@ def _trace_mean_color(pixels):
     return tuple(int(v) for v in np.mean(arr, axis=0))
 
 
-def _line_color_near_icon(frame, cx, cy, players, cfg, scale=1.0):
-    """Определить цвет ЛИНИИ победителя через topmost-пиксель per color.
+def _has_line_color_in_tail(frame, cx, cy, players, cfg,
+                              min_tight_pixels: int = 12):
+    """Topmost пиксель каждой цветовой маски в зоне ПОД victory/defeat-иконкой.
 
-    На экране «Счёт» 7-минутного графика у каждого игрока своя линия растёт
-    слева направо. Самая «верхняя» (с наименьшим y_max по столбцам) — это
-    линия победителя: её конец увенчан victory-иконкой. Алгоритм:
-      * берём chart_roi в пикселях, исключая halo victory (cx - 80..cx),
-        чтобы не ловить светлое свечение монеты;
-      * по y стартуем НЕ ВЫШЕ cy + 50 — это отрезает halo и шапку;
-      * для каждого цвета игрока строим маску dim+vivid эталонов с
-        TIGHT допуском 18 RGB-еврик. distance + sat >= 18, чтобы выкинуть
-        серый фон;
-      * победитель — та маска, чей topmost (min y) пиксель — выше всех
-        (наименьший y_global) из всех подходящих.
+    Берём полосу [cx-halo..cx, cy+halo..gy1] в chart_roi, исключая пиксели
+    внутри halo (radius < HALO от центра иконки — это голубоватое свечение
+    монеты, которое прежний код ошибочно принимал за 'blue'/' Мордор').
+
+    Победитель — маска с topmost (минимальный y_global). Чем выше его
+    topmost — тем ближе к victory-монете.
+
+    Возвращает (True, idx-лидер, sample, dict counts).
     """
     h, w = frame.shape[:2]
-    s = float(scale) * float(cfg.scale_for(w, h))
-    halo_x = int(80.0 * s)   # px от cx victory — чтобы не лезть в свечение
-    halo_y_down = 50         # ниже victory эта величина skip гарантирует,
-                             # что мы смотрим УЖЕ на хвост линии, не halo
-
+    s = float(cfg.scale_for(w, h))
+    HALO = int(42.0 * s)
     fx0, fy0, fx1, fy1 = cfg.chart_roi
     gx0 = int(fx0 * w); gy0 = int(fy0 * h); gx1 = int(fx1 * w); gy1 = int(fy1 * h)
-    gx1 = min(gx1, int(cx) - halo_x)
-    y_start = int(cy) + halo_y_down
-    if gx1 <= gx0 or y_start >= gy1:
-        return {"player": None, "side": "left", "best": None, "mean_rgb": None}
+    # Исключаем halo ПО x
+    x_left_in_zone = max(gx0, int(cx) - int(220.0 * s))
+    x_right_in_zone = max(gx0, int(cx) - HALO)
+    y_start = int(cy) + HALO
+    if x_right_in_zone <= x_left_in_zone or y_start >= gy1:
+        return False, None, None, {}
 
-    region = frame[y_start:gy1, gx0:gx1, :].astype(np.int32)
-    sat = (region.max(axis=2) - region.min(axis=2))
+    region = frame[y_start:gy1, x_left_in_zone:x_right_in_zone, :].astype(np.int32)
+    sat = region.max(axis=2) - region.min(axis=2)
     sat_ok = sat >= 18
+    r = region[..., 0]; g = region[..., 1]; b = region[..., 2]
 
-    results = []
+    # Halo для КАЖДОЙ иконки: (dx,dy) уже за пределами нашей zone_start
+    # (мы начали с y ≥ cy+HALO), и по x мы кончаемся на cx-HALO.
+    # Это уже убирает halo victory-монеты.
+
     names = [p.get("color") for p in players]
+    results = []
+    counts = {}
     for idx, name in enumerate(names):
         if not name:
             continue
@@ -456,42 +459,50 @@ def _line_color_near_icon(frame, cx, cy, players, cfg, scale=1.0):
         if not refs:
             continue
         ref_arr = np.array(refs, dtype=np.int32)
-        d = np.sqrt(((region[..., 0][..., None] - ref_arr[:, 0]) ** 2
-                     + (region[..., 1][..., None] - ref_arr[:, 1]) ** 2
-                     + (region[..., 2][..., None] - ref_arr[:, 2]) ** 2
+        d = np.sqrt(((r[..., None] - ref_arr[:, 0]) ** 2
+                     + (g[..., None] - ref_arr[:, 1]) ** 2
+                     + (b[..., None] - ref_arr[:, 2]) ** 2
                      ).min(axis=-1))
         ok = (d <= 18) & sat_ok
-        if not ok.any():
-            continue
-        ys, xs = np.where(ok)
-        top_y_local = int(ys.min())
-        top_y_global = top_y_local + y_start
-        sample_x = int(xs[ys == top_y_local].mean())
-        sample = tuple(int(v) for v in region[top_y_local, sample_x])
-        results.append((idx, name, top_y_global, int(ok.sum()), sample))
-
+        n = int(ok.sum())
+        counts[name] = n
+        if ok.any():
+            ys_u, xs_u = np.where(ok)
+            top_y_local = int(ys_u.min())
+            top_y_global = top_y_local + y_start
+            sample = tuple(int(v) for v in region[top_y_local, int(xs_u[ys_u == top_y_local].mean())])
+            results.append((idx, name, top_y_global, n, sample))
     if not results:
-        return {"player": None, "side": "left", "best": None, "mean_rgb": None}
-    # Сначала фильтруем: topmost должен быть на РЕАЛЬНОЙ высоте графика
-    # (не в самой нижней части, иначе это будет «кепка» линии каждого).
-    # Берём того, у кого topmost_y_global наименьший И при этом topmost
-    # не оторвался от основной массы пикселей (>10 пикселей найдено).
-    filtered = [r for r in results if r[3] >= 10 and r[2] < int(cy) + 200]
+        return False, None, None, counts
+    filtered = [r for r in results if r[3] >= min_tight_pixels and r[2] < cy + 400]
     if not filtered:
-        filtered = [r for r in results if r[3] >= 10]
+        filtered = [r for r in results if r[3] >= min_tight_pixels]
     if not filtered:
-        return {"player": None, "side": "left", "best": None, "mean_rgb": None}
+        return False, None, None, counts
+    # Победитель: topmost per color (минимальный top_y_global)
     winner = min(filtered, key=lambda t: t[2])
-    winner_idx, winner_name, top_y_g, _, sample = winner
+    winner_idx, _, top_y_g, _, sample = winner
+    return True, winner_idx, sample, counts
+
+
+
+
+def _line_color_near_icon(frame, cx, cy, players, cfg, scale=1.0):
+    """Определить цвет ЛИНИИ победителя в tight-зоне под victory/defeat-иконкой.
+
+    Используется как fallback при выборе из нескольких victory-кандидатов.
+    Возвращает dict с тем же форматом, что analyze_line_at_icon, либо None.
+    """
+    found, idx, sample, _ = _has_line_color_in_tail(
+        frame, cx, cy, players, cfg)
+    if not found:
+        return None
     return {
-        "player": int(winner_idx), "side": "left",
-        "best": {"topmost_y_global": top_y_g,
-                 "sample_rgb": sample,
-                 "competitors": [
-                     {"name": r[1], "topmost_y_global": r[2],
-                      "pixels": r[3], "sample": r[4]} for r in filtered]},
+        "player": int(idx), "side": "left",
+        "best": {"sample_rgb": sample},
         "mean_rgb": sample,
     }
+
 
 
 

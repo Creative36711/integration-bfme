@@ -428,47 +428,59 @@ class MatchResultDetector:
     def _match_icons_to_players(self, frame, icons):
         """Определить команду-победителя по САМОЙ ВЕРХНЕЙ victory-монете.
 
-        Первоначальный план: нам достаточно найти ОДНОГО победителя —
-        топовую (наибольшее значение на графике) victory-иконку, прочитать
-        цвет её ЛИНИИ и сопоставить с известным цветом игрока. Это убирает
-        проблемы ручного сопоставления 7 иконок 7 игрокам и ложных
-        SURRENDER от «конфликтных привязок».
+        Первоначальный план: достаточно найти ОДНОГО победителя — топовую
+        victory-иконку с реальной линией, приходящей к ней.
 
-        Алгоритм:
-          1. Из всех найденных иконок вида victory выбираем одну с
-             МИНИМАЛЬНЫМ cy (выше всех на графике = макс. счёт).
-          2. Слева от этой иконки трассируем её линию (analyze_line_at_icon)
-             и берём средний цвет нитки.
-          3. Сопоставляем цвет с известными цветами игроков — это и есть
-             индекс победившего игрока.
-          4. Команда-победитель = team этого игрока; team проигравшего =
-             другая команда.
-
-        Если топовой victory иконки нет — SURRENDER: команда-победитель =
-        команда без defeat’ов (по first-pass статистике).
+        Алгоритм (устойчив к ложным template matches):
+          1. Из всех найденных victory-кандидатов ФИЛЬТРУЕМ те, под которыми
+             в tight-зоне (cy+5..cy+80, x=xc-50..cx+5) есть ДОМИНИРУЮЩИЙ
+             цвет (>=15 пикселей) одной из линий игроков. Настоящая
+             victory-монета ВСЕГДА стоит НА КОНЦЕ чьей-то цветной линии —
+             template false positives — нет.
+          2. Из отфильтрованных выбираем топ-victory с МИНИМАЛЬНЫМ cy.
+          3. «Победитель» — игрок, чей цвет доминирует в tight-зоне.
+          4. Команда-победитель = его team; команда-проигравшего = другая.
         """
         base_frame = frame
         assignments: List[Dict[str, Any]] = []
         log_vivid: List[Any] = []
 
-        # 1. Самая верхняя victory
+        # 1. Кандидаты с РЕАЛЬНОЙ линией (tight-zone дала доминирующий цвет)
         victories = [ic for ic in icons if ic["kind"] == "victory"]
+        candidates = []  # [(cy, cx, score, winner_idx, sample_rgb)]
+        for ic in victories:
+            found, idx, sample, counts = color_analyzer._has_line_color_in_tail(
+                base_frame, ic["cx"], ic["cy"],
+                self.players, self._cfg)
+            if found and idx is not None:
+                candidates.append((ic["cy"], ic["cx"], ic["score"], idx, sample))
+
+        # 2. Topmost из валидных
         top_victory: Optional[Dict[str, Any]] = None
-        if victories:
-            top_victory = min(victories, key=lambda i: i["cy"])
-
-        # 2. Цвет линии у топовой victory
         winner_idx: Optional[int] = None
-        if top_victory is not None:
-            winner_idx = self._line_color_at_icon(base_frame, top_victory)
-            log_vivid.append({"top_victory": top_victory,
-                              "winner_player": winner_idx,
-                              "winner_color": (self.players[winner_idx].get(
-                                  "color") if winner_idx is not None
-                              else None)})
+        winner_sample = None
+        if candidates:
+            top = min(candidates, key=lambda c: c[0])
+            _, tcx, tscore, tidx, tsample = top
+            top_victory = {"kind": "victory", "cx": tcx, "cy": top[0],
+                           "score": tscore}
+            winner_idx = tidx
+            winner_sample = tsample
 
-        # 3. assignments: топ-victory реальная, остальные — просто
-        #    фиксируются для raw_data.
+        # 3. Log
+        log_vivid.append({
+            "candidates_evaluated": [
+                {"cy": c[0], "cx": c[1], "score": c[2],
+                 "winner_idx": c[3], "sample": c[4]}
+                for c in candidates
+            ],
+            "winner_player": winner_idx,
+            "winner_color": (self.players[winner_idx].get("color")
+                             if winner_idx is not None else None),
+            "raw_victory_count": len(victories),
+        })
+
+        # 4. Assignments: топ-victory в winners, остальные иконки — без матча.
         if top_victory is not None:
             assignments.append({
                 "kind": top_victory["kind"],
@@ -480,7 +492,8 @@ class MatchResultDetector:
                 "is_winner_icon": True,
             })
         for ic in icons:
-            if top_victory is not None and ic is top_victory:
+            if top_victory is not None and ic["cx"] == top_victory["cx"] \
+                    and ic["cy"] == top_victory["cy"]:
                 continue
             assignments.append({
                 "kind": ic["kind"], "cx": ic["cx"], "cy": ic["cy"],
@@ -488,17 +501,17 @@ class MatchResultDetector:
                 "color_side": None, "is_winner_icon": False,
             })
 
-        # 4. Передать в build_result: только winner_idx, без surrendered.
+        # 5. Сборка результата
         result = player_matcher.build_result(
             self.players, assignments, raw={}, surrendered=None)
         result["raw_data"]["icons"] = assignments
         result["raw_data"]["highlight_assignments"] = log_vivid
         result["raw_data"]["click_slots"] = False
-        # Сигнал, что нашли топовую victory (для отладки/raw).
         result["raw_data"]["top_victory"] = (
             {"cx": top_victory["cx"], "cy": top_victory["cy"],
              "score": top_victory["score"],
-             "player_index": winner_idx}
+             "player_index": winner_idx,
+             "sample": winner_sample}
             if top_victory is not None else None)
         if self._cfg.debug:
             self._save_debug(base_frame, assignments, result)
