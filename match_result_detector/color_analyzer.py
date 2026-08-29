@@ -479,9 +479,16 @@ def _has_line_color_in_tail(frame, cx, cy, players, cfg,
         filtered = [r for r in results if r[3] >= min_tight_pixels]
     if not filtered:
         return False, None, None, counts
-    # Победитель: topmost per color (минимальный top_y_global)
-    winner = min(filtered, key=lambda t: t[2])
-    winner_idx, _, top_y_g, _, sample = winner
+    # Победитель — маска с МАКСИМАЛЬНЫМ количеством пикселей (настоящий
+    # длинный хвост линии). У проходящих чужой линии или шума — десятки
+    # пикселей, у настоящего хвоста — 200+. Требуем leader >= 1.5x runner-up
+    # чтобы избежать ложных матчей.
+    filtered.sort(key=lambda t: -t[3])  # max count first
+    leader = filtered[0]
+    if len(filtered) > 1 and filtered[1][3] * 1.5 > leader[3] and leader[3] < 200:
+        return False, None, None, counts
+    winner_idx = leader[0]
+    sample = leader[4]
     return True, winner_idx, sample, counts
 
 
