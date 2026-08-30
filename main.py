@@ -392,12 +392,15 @@ def monitor_match_result(players, detector_cfg, lock_input=True):
     result = detector.wait_for_result(timeout=detector_cfg.get("monitor_timeout", 1500))
     if not result:
         result = {"match_status": STATUS_UNKNOWN, "winning_team": None,
-                  "losing_team": None, "winners": [], "losers": [],
+                  "losing_team": None, "winning_team_label": None,
+                  "losing_team_label": None, "winners": [], "losers": [],
                   "unmatched_players": [],
                   "raw_data": {"error": "no result (monitor timeout)"}}
     write_match_result(result)
+    wt = result.get("winning_team")
+    wt_label = result.get("winning_team_label") or wt
     log(f"[match] результат: status={result.get('match_status')} "
-        f"winning_team={result.get('winning_team')}")
+        f"winning_team={wt} ({wt_label})")
     return result
 
 
@@ -528,6 +531,18 @@ def main(argv=None):
         log("[lock] input lock DISABLED")
 
     try:
+        # 0. Если игра уже открыта — закрываем ПЕРЕД записью настроек и
+        #    генерацией спавн-патча (иначе открытая игра может держать файлы
+        #    и при следующем запуске стартует вторая копия).
+        if launcher.is_game_running():
+            log("[check] игра уже запущена — закрываю...")
+            if not launcher.stop_game():
+                log("ERROR: не удалось закрыть уже запущенную игру",
+                    file=sys.stderr)
+                return 1
+        else:
+            log("[check] игра не запущена")
+
         # 0. prepare network settings BEFORE launch — the game reads
         #    NetworkPref.ini on startup (rules + player faction + color).
         settings = network_prefs.settings_for_faction(cfg.get("network_rules"), faction)

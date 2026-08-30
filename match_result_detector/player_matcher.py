@@ -3,8 +3,8 @@
 Сопоставление цветов линий с игроками и формирование итогового результата.
 
 Вход — список игроков, у каждого:
-    name, color (имя цвета: blue/red/...), team (1 = Свет, 2 = Тьма),
-    is_local_player, slot (номер слота 1..8).
+    name, color (имя цвета: blue/red/...), team ("good" = добро,
+    "evil" = зло), is_local_player, slot (номер слота 1..8).
 
 ЦВЕТА и КОМАНДЫ известны заранее (детерминированное распределение в
 bridge/room.py): цвет каждой фракции задан при старте боя, союз
@@ -26,13 +26,28 @@ from typing import Dict, List, Optional
 
 log = logging.getLogger("match_detector.matcher")
 
+# Человекочитаемые названия сторон для JSON/лог-а.
+TEAM_LABELS = {
+    "good": "Добро",
+    "evil": "Зло",
+}
+
+
+def _normalize_team(team):
+    """Нормализовать команду: старые числа 1/2 -> \"good\"/\"evil\"."""
+    if team in (1, "1"):
+        return "good"
+    if team in (2, "2"):
+        return "evil"
+    return team
+
 
 def _player_summary(players, index):
     p = players[index]
     return {
         "name": p.get("name", f"player-{index}"),
         "slot": p.get("slot"),
-        "team": p.get("team"),
+        "team": _normalize_team(p.get("team")),
         "color": p.get("color"),
         "is_local_player": bool(p.get("is_local_player", False)),
     }
@@ -41,9 +56,10 @@ def _player_summary(players, index):
 def determine_winning_team(winners, losers, players, surrendered=None):
     """Определить КОМАНДУ-ПОБЕДИТЕЛЯ.
 
-    В матче всегда ровно 2 команды (Свет/Тьма). Побеждает та команда, у
-    которой есть хотя бы один победитель. Если победителей нет — победителем
-    считается команда без проигравших (выжившие).
+    В матче всегда ровно 2 команды: добро ("good") и зло ("evil").
+    Побеждает та команда, у которой есть хотя бы один победитель. Если
+    победителей нет — победителем считается команда без проигравших
+    (выжившие).
 
     `surrendered` — индексы игроков, чья линия НЕ дошла ни до одной иконки
     (сдался/вышел). Сдавшийся проигрывает, поэтому считается «проигравшим».
@@ -52,15 +68,17 @@ def determine_winning_team(winners, losers, players, surrendered=None):
         (winning_team, losing_team, status).
         status: "COMPLETED" / "SURRENDER" / "UNKNOWN".
     """
-    teams = {p.get("team") for p in players}
+    teams = {_normalize_team(p.get("team")) for p in players}
     teams.discard(None)
 
-    winner_teams = {w["team"] for w in winners if w.get("team") is not None}
+    winner_teams = {_normalize_team(w["team"]) for w in winners
+                    if w.get("team") is not None}
     # Проигравшие = те, у кого вспышка поражения + сдавшиеся (линия без иконки).
-    loser_teams = {l["team"] for l in losers if l.get("team") is not None}
+    loser_teams = {_normalize_team(l["team"]) for l in losers
+                   if l.get("team") is not None}
     for idx in (surrendered or []):
         if 0 <= idx < len(players):
-            t = players[idx].get("team")
+            t = _normalize_team(players[idx].get("team"))
             if t is not None:
                 loser_teams.add(t)
 
@@ -71,7 +89,8 @@ def determine_winning_team(winners, losers, players, surrendered=None):
         # цветового матчинга (ложные привязки). Побеждает команда, у которой
         # монеток БОЛЬШЕ; при равенстве — результат неоднозначен (UNKNOWN),
         # чтобы не выдавать ложный вердикт.
-        counts = {t: sum(1 for w in winners if w["team"] == t)
+        counts = {t: sum(1 for w in winners
+                         if _normalize_team(w["team"]) == t)
                   for t in winner_teams}
         max_count = max(counts.values())
         tops = [t for t, c in counts.items() if c == max_count]
@@ -162,6 +181,8 @@ def build_result(players, icon_assignments, raw=None, surrendered=None):
         "match_status": status,
         "winning_team": winning_team,
         "losing_team": losing_team,
+        "winning_team_label": TEAM_LABELS.get(winning_team or ""),
+        "losing_team_label": TEAM_LABELS.get(losing_team or ""),
         "winners": winners,
         "losers": loser_summaries,
         "unmatched_players": [_player_summary(players, i) for i in unmatched],

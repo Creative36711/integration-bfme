@@ -93,11 +93,11 @@ def _color_distance(rgb, ref):
 
 def _hue_ok(color_name: str, rgb) -> bool:
     """Оттенковый фильтр: отбрасывает близкие по RGB, но чужие по тону."""
-    name = color_name
-    if not name:
+    if not color_name:
         return True
     r, g, b = (int(v) for v in rgb)
     rg, gb = r - g, g - b
+    name = color_name
     if name == "blue":
         return (b - r) >= 25
     if name == "green":
@@ -111,8 +111,26 @@ def _hue_ok(color_name: str, rgb) -> bool:
     if name == "orange":
         return (rg >= 5) & (gb >= 4)
     if name == "purple":
-        return (gb >= 4) & (r >= g - 4)
+        # Фиолетовая линия Ангмара на реальном экране — не только пурпурный
+        # (r>g, b>g), но и тёмный сине-фиолетовый (b>g, b≈r). Общий признак:
+        # ЗЕЛЁНЫЙ — минимальный канал, а синий не слишком доминирует над
+        # красным (иначе это чисто синяя линия Людей). Разброс b-r ~
+        # -25..+25 считается фиолетовым.
+        return (r >= g) & (b >= g) & ((b - r) <= 30)
     return True
+
+
+def _hue_mask(color_name: str, r, g, b):
+    """Векторизованный аналог _hue_ok для целого массива пикселей.
+
+    Сейчас применяется только к фиолетовому: это самый проблемный случай
+    (тёмно-фиолетовая линия Ангмара близка по RGB к зелёной/синей, а старые
+    эталоны ловили чужую нитку). Для остальных цветов решений не меняем,
+    чтобы не сломать живой click-highlight прогон.
+    """
+    if color_name != "purple":
+        return np.ones(r.shape, dtype=bool)
+    return (r >= g) & (b >= g) & ((b - r) <= 30)
 
 
 def classify_pixel(rgb, color_names, cfg) -> Optional[str]:
@@ -204,6 +222,11 @@ def find_highlighted_line_endpoint(frame, color_name: str, cfg,
         d = np.sqrt((r - ref[0]) ** 2 + (g - ref[1]) ** 2
                     + (b - ref[2]) ** 2)
         match |= (d <= cfg.color_tolerance * 1.3)
+    # КРИТИЧНО: отсекаем пиксели ЧУЖОГО оттенка, даже если они близки по
+    # RGB. Без этого, например, зелёная линия Эльфов попадала в маску
+    # purple (ангмар) — детектор видел её конец у defeat_flame и не
+    # доходил до настоящего victory_coin у фиолетовой линии.
+    match &= _hue_mask(color_name, r, g, b)
     if bright_only:
         match &= (mx >= 98)
     if not match.any():

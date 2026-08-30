@@ -12,7 +12,7 @@ main() значений.
       "name": "Игрок" | "Бот N",
       "slot": 1..8,
       "color": "blue"/"red"/...,   # имя цвета для детектора
-      "team": 1 (Свет) | 2 (Тьма),
+      "team": "good" (добро) | "evil" (зло),
       "is_local_player": bool,
     }
 
@@ -41,13 +41,13 @@ _LINE_COLORS = {
     "angmar": "purple",
 }
 
-# Союзы фракций: 1 = Свет (добро), 2 = Тьма (зло). Продублировано здесь,
-# чтобы не тянуть бридж (bridge.room тянет ctypes.windll — только Windows).
+# Союзы фракций: "good" = Свет (добро), "evil" = Тьма (зло). Продублировано
+# здесь, чтобы не тянуть бридж (bridge.room тянет ctypes.windll — только Windows).
 # Значения совпадают с bridge.room.FACTION_ALLIANCES.
 _TEAM_BY_FACTION = {
-    "men": 1, "elves": 1, "dwarves": 1,            # свет
-    "isengard": 2, "mordor": 2, "goblins": 2,      # тьма
-    "angmar": 2,
+    "men": "good", "elves": "good", "dwarves": "good",            # свет
+    "isengard": "evil", "mordor": "evil", "goblins": "evil",      # тьма
+    "angmar": "evil",
 }
 
 
@@ -100,5 +100,5 @@ def _line_color(faction):
 
 
 def _team_for(faction):
-    """Команда фракции: 1 = Свет (добро), 2 = Тьма (зло)."""
+    """Команда фракции: \"good\" = Свет (добро), \"evil\" = Тьма (зло)."""
     return _TEAM_BY_FACTION.get(faction)
