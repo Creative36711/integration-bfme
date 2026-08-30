@@ -166,6 +166,11 @@ class MatchResultDetector:
         if not players:
             raise ValueError("players list must not be empty")
         self.players = list(players)
+        # Slot 1 is the local player in the rating column and is selected by
+        # the game automatically.  Keep the metadata consistent even when a
+        # caller supplies only the slot/team/color fields.
+        if self.players and "is_local_player" not in self.players[0]:
+            self.players[0]["is_local_player"] = True
         self._screen_resolution = tuple(screen_resolution) \
             if screen_resolution else None
         self._cfg = DetectorConfig.from_dict(config)
@@ -426,114 +431,199 @@ class MatchResultDetector:
         return dedup
 
     def _match_icons_to_players(self, frame, icons):
-        """Определить команду-победителя по САМОЙ ВЕРХНЕЙ victory-монете.
+        """Сопоставить иконки с игроками.
 
-        Первоначальный план: достаточно найти ОДНОГО победителя — топовую
-        victory-иконку с реальной линией, приходящей к ней.
-
-        Алгоритм (устойчив к ложным template matches):
-          1. Из всех найденных victory-кандидатов ФИЛЬТРУЕМ те, под которыми
-             в tight-зоне (cy+5..cy+80, x=xc-50..cx+5) есть ДОМИНИРУЮЩИЙ
-             цвет (>=15 пикселей) одной из линий игроков. Настоящая
-             victory-монета ВСЕГДА стоит НА КОНЦЕ чьей-то цветной линии —
-             template false positives — нет.
-          2. Из отфильтрованных выбираем топ-victory с МИНИМАЛЬНЫМ cy.
-          3. «Победитель» — игрок, чей цвет доминирует в tight-зоне.
-          4. Команда-победитель = его team; команда-проигравшего = другая.
+        Два пути:
+          1. click-highlight (живой прогон): кликаем по каждому слоту, его
+             линия становится яркой; ищем ЯРКУЮ линию ЗАДАННОГО цвета (цвета
+             игрока) и смотрим, к какой иконке она приходит — это самый
+             надёжный способ (цвет известен заранее).
+          2. static fallback (офлайн/настройка): пишем цвет линии слева от
+             каждой иконки и сопоставляем с известными цветами игроков.
         """
         base_frame = frame
-        assignments: List[Dict[str, Any]] = []
-        log_vivid: List[Any] = []
+        assignments = []
+        log_vivid = []
 
-        # 1. Кандидаты с РЕАЛЬНОЙ линией (tight-zone дала доминирующий цвет)
-        victories = [ic for ic in icons if ic["kind"] == "victory"]
-        candidates = []  # [(cy, cx, score, winner_idx, sample_rgb)]
-        for ic in victories:
-            found, idx, sample, counts = color_analyzer._has_line_color_in_tail(
-                base_frame, ic["cx"], ic["cy"],
-                self.players, self._cfg)
-            if found and idx is not None:
-                candidates.append((ic["cy"], ic["cx"], ic["score"], idx, sample))
+        # --- Путь 1: клик по слотам для подсветки ----------------------
+        if (self._cfg.click_slots and self._click is not None
+                and self._viewport() is not None):
+            assignments, surrendered = self._match_by_highlight(
+                frame, icons, log_vivid)
+            result = player_matcher.build_result(self.players, assignments,
+                                                 raw={},
+                                                 surrendered=surrendered)
+            result["raw_data"]["icons"] = assignments
+            result["raw_data"]["highlight_assignments"] = log_vivid
+            result["raw_data"]["surrendered_slots"] = surrendered
+            result["raw_data"]["click_slots"] = True
+            if self._cfg.debug:
+                self._save_debug(base_frame, assignments, result)
+            return result
 
-        # 2. Topmost из валидных
-        top_victory: Optional[Dict[str, Any]] = None
-        winner_idx: Optional[int] = None
-        winner_sample = None
-        if candidates:
-            top = min(candidates, key=lambda c: c[0])
-            _, tcx, tscore, tidx, tsample = top
-            top_victory = {"kind": "victory", "cx": tcx, "cy": top[0],
-                           "score": tscore}
-            winner_idx = tidx
-            winner_sample = tsample
-
-        # 3. Log
-        log_vivid.append({
-            "candidates_evaluated": [
-                {"cy": c[0], "cx": c[1], "score": c[2],
-                 "winner_idx": c[3], "sample": c[4]}
-                for c in candidates
-            ],
-            "winner_player": winner_idx,
-            "winner_color": (self.players[winner_idx].get("color")
-                             if winner_idx is not None else None),
-            "raw_victory_count": len(victories),
-        })
-
-        # 4. Assignments: топ-victory в winners, остальные иконки — без матча.
-        if top_victory is not None:
-            assignments.append({
-                "kind": top_victory["kind"],
-                "cx": top_victory["cx"], "cy": top_victory["cy"],
-                "score": top_victory["score"],
-                "player": winner_idx,
-                "color_side": (self.players[winner_idx].get("color")
-                               if winner_idx is not None else None),
-                "is_winner_icon": True,
-            })
+        # --- Путь 2: статичный кадр (без кликов) -----------------------
         for ic in icons:
-            if top_victory is not None and ic["cx"] == top_victory["cx"] \
-                    and ic["cy"] == top_victory["cy"]:
-                continue
+            idx = self._icon_to_player_index(base_frame, ic)
             assignments.append({
                 "kind": ic["kind"], "cx": ic["cx"], "cy": ic["cy"],
-                "score": ic["score"], "player": None,
-                "color_side": None, "is_winner_icon": False,
+                "score": ic["score"], "player": idx,
+                "color_side": self.players[idx].get("color") if idx is not None else None,
             })
 
-        # 5. Сборка результата
-        result = player_matcher.build_result(
-            self.players, assignments, raw={}, surrendered=None)
+        result = player_matcher.build_result(self.players, assignments, raw={})
         result["raw_data"]["icons"] = assignments
         result["raw_data"]["highlight_assignments"] = log_vivid
         result["raw_data"]["click_slots"] = False
-        result["raw_data"]["top_victory"] = (
-            {"cx": top_victory["cx"], "cy": top_victory["cy"],
-             "score": top_victory["score"],
-             "player_index": winner_idx,
-             "sample": winner_sample}
-            if top_victory is not None else None)
         if self._cfg.debug:
             self._save_debug(base_frame, assignments, result)
         return result
 
-    def _line_color_at_icon(self, frame, icon):
-        """Определить индекс игрока, чья линия приходит к victory/defeat иконке.
+    def _match_by_highlight(self, frame, icons, log_vivid):
+        """Путь 1: клики по слотам «Рейтинга» + яркая линия.
 
-        Прямой вызов color_analyzer._line_color_near_icon.
+        Регламент пользователя (железно):
+          * слот 1 активирован по умолчанию — его НЕ кликаем;
+            точка = конец его яркой линии;
+          * victory-иконка  -> этот игрок победил (нашли команду-победителя);
+          * defeat-иконка   -> кликаем СЛЕДУЮЩИЙ слот 2..8, повторяем;
+          * ни victory, ни defeat (линия не дошла до иконки / нет яркой
+            линии) -> игрок сдался: побеждает игрок на стороне соперника,
+            команда игрока (team 1) проигрывает.
+
+        Returns:
+            (icon_assignments, surrendered_idx).
         """
-        h, w = frame.shape[:2]
-        res = color_analyzer._line_color_near_icon(
-            frame, int(icon["cx"]), int(icon["cy"]),
-            self.players, self._cfg,
-            scale=self._cfg.scale_for(w, h))
+        base_frame = frame
+        resolved = {}             # slot -> {"kind", "icon", "dist", "color"}
+        surrendered_slots = set() # слоты: линия не дошла до marker
+        winner_slot = None        # слот, чья линия дошла до victory
+        max_x_gap = 80.0
+        # A highlighted line may be hidden under the marker halo by up to
+        # this many pixels; do not accept a distant crossing as a marker.
+        max_y_gap = 60.0
+
+        slots = [1] + sorted({p.get("slot", 1) for p in self.players
+                              if p.get("slot", 1) > 1})
+        for slot in slots:
+            if winner_slot is not None:
+                # Победитель уже найден — остальные слоты не опрашиваем
+                # (их линия могла не успеть «включиться»).
+                surrendered_slots.add(slot)
+                continue
+            color = None
+            p_slot = self._player_by_slot(slot)
+            if p_slot is not None:
+                color = p_slot.get("color")
+            if not color:
+                log.warning("slot %d has no color — skip", slot)
+                continue
+            if slot != 1:
+                clicked = self._click_slot(slot)
+                if not clicked:
+                    log.warning("click for slot %d (%s) FAILED — line "
+                                "stays dim, will likely be SURRENDER",
+                                slot, color)
+            f = self._capture_frame()
+            if f is None:
+                f = base_frame
+
+            # Obtain the endpoint from the saturated-line mask.  The
+            # selected slot is expected to remain bright after the click;
+            # dim references are not used by this live path.
+            x_end, y_end, _pixels = color_analyzer.find_highlighted_line_endpoint(
+                f, color, self._cfg, exclude_icons=icons, near_icons=icons,
+                max_x=None,
+                y_band=55.0, bright_only=True)
+            # The endpoint finder is a saturated-line probe.  Resolve only
+            # an icon physically close to its endpoint in both axes.
+            if x_end is not None:
+                candidates = []
+                for ic in icons:
+                    dx = abs(float(ic["cx"]) - x_end)
+                    dy = abs(float(ic["cy"]) - y_end)
+                    if dx <= max_x_gap and dy <= max_y_gap:
+                        candidates.append((dx + 0.35 * dy, dx, dy, ic))
+                if candidates:
+                    _score, _dx, _dy, ic = min(candidates, key=lambda v: v[:3])
+                    dist = float(np.hypot(x_end - ic["cx"], y_end - ic["cy"]))
+                    resolved[slot] = {"kind": ic["kind"], "icon": ic,
+                                      "dist": dist, "color": color}
+                    log_vivid.append(
+                        (color, slot, ic["kind"], x_end, y_end, round(dist, 1)))
+                    if ic["kind"] == "victory":
+                        winner_slot = slot
+                        # Победитель найден — больше слотов НЕ кликаем.
+                        break
+                    # defeat-иконка: по регламенту кликаем следующий слот.
+                else:
+                    surrendered_slots.add(slot)
+                    log_vivid.append(
+                        (color, slot, "SURRENDER", x_end, y_end, None))
+                    # No marker: this is the explicit surrender signal.
+                    # Do not probe later slots after it.
+                    break
+            else:
+                # Яркой линии не нашли вообще — считаем сдачей.
+                surrendered_slots.add(slot)
+                log.warning("could not find bright %s line at slot %d — "
+                            "SURRENDER", color, slot)
+                break
+
+        # Собираем assignments: каждая иконка -> слот, который к ней привязан.
+        assignments = []
+        for ic in icons:
+            slot_owner = None
+            for slot, info in resolved.items():
+                if (info["icon"]["cx"] == ic["cx"]
+                        and info["icon"]["cy"] == ic["cy"]):
+                    slot_owner = slot
+                    break
+            if slot_owner is not None:
+                p = self._player_by_slot(slot_owner)
+                assignments.append({
+                    "kind": ic["kind"], "cx": ic["cx"], "cy": ic["cy"],
+                    "score": ic["score"], "player": self.players.index(p),
+                    "color_side": p.get("color"),
+                })
+            else:
+                assignments.append({
+                    "kind": ic["kind"], "cx": ic["cx"], "cy": ic["cy"],
+                    "score": ic["score"], "player": None, "color_side": None,
+                })
+
+        # Слоты-«сдавшиеся» превращаем в индексы игроков (для build_result).
+        surrendered_idx = []
+        for s in sorted(surrendered_slots):
+            p = self._player_by_slot(s)
+            if p is not None and p in self.players:
+                surrendered_idx.append(self.players.index(p))
+        return assignments, surrendered_idx
+
+    def _icon_to_player_index(self, frame, icon):
+        """Статичный путь: определить цвет линии у иконки -> индекс игрока."""
+        cx = int(icon["cx"])
+        cy = int(icon["cy"])
+        res = color_analyzer.analyze_line_at_icon(
+            frame, cx, cy, self.players, self._cfg,
+            scale=self._cfg.scale_for(frame.shape[1], frame.shape[0]))
         return res.get("player")
 
+    def _player_by_slot(self, slot):
+        for p in self.players:
+            if p.get("slot") == slot:
+                return p
+        return self._player_by_index(0)
+
+    def _player_by_index(self, idx):
+        return self.players[idx] if 0 <= idx < len(self.players) else self.players[0]
+
+    # --- клики ---------------------------------------------------------
     def _click_slot(self, slot):
-        """Клик по слоту в «Рейтинге». После моего рефакторинга
-        click-highlight путь больше не используется (мы определяем winner
-        без кликов по topmost-цвету), но этот метод остался на случай
-        отладки/старых вызовов и совместимости с cfg.click_slots=False.
+        """Кликнуть по слоту в «Рейтинге», чтобы подсветить его линию.
+
+        Возвращает True, если клик был выполнен (даже если viewport == None
+        — это будет видно из warnings, но без падения). Возвращает False,
+        если клик НЕ МОГ быть выполнен (нет viewport/нет координат).
         """
         try:
             vp = self._viewport()
