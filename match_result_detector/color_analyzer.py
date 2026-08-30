@@ -417,23 +417,21 @@ def _trace_mean_color(pixels):
 
 def _has_line_color_in_tail(frame, cx, cy, players, cfg,
                               min_tight_pixels: int = 12):
-    """Topmost пиксель каждой цветовой маски в зоне ПОД victory/defeat-иконкой.
+    """Найти «настоящий» цвет линии под victory/defeat-иконкой.
 
-    Берём полосу [cx-halo..cx, cy+halo..gy1] в chart_roi, исключая пиксели
-    внутри halo (radius < HALO от центра иконки — это голубоватое свечение
-    монеты, которое прежний код ошибочно принимал за 'blue'/' Мордор').
-
-    Победитель — маска с topmost (минимальный y_global). Чем выше его
-    topmost — тем ближе к victory-монете.
-
-    Возвращает (True, idx-лидер, sample, dict counts).
+    Тонкая tight-зона (cy+HALO..cy+250, x=cx-220..cx-HALO) — без halo.
+    В ней строим маску dim+vivid эталона каждого цвета игрока. Для
+    «плоских» эталонов (refs_sat_max < 10, типичный white Изенгарда) —
+    НЕ применяем фильтр sat >= 18 (отрежет белую линию), вместо этого
+    сравниваем сумму яркости mx. Для насыщенных — sat >= 18.
+    Победитель — маска с МАКСИМАЛЬНЫМ количеством пикселей (длинный хвост
+    линии), при leader >= 1.5x runner-up (или leader >= 200 px).
     """
     h, w = frame.shape[:2]
     s = float(cfg.scale_for(w, h))
     HALO = int(42.0 * s)
     fx0, fy0, fx1, fy1 = cfg.chart_roi
     gx0 = int(fx0 * w); gy0 = int(fy0 * h); gx1 = int(fx1 * w); gy1 = int(fy1 * h)
-    # Исключаем halo ПО x
     x_left_in_zone = max(gx0, int(cx) - int(220.0 * s))
     x_right_in_zone = max(gx0, int(cx) - HALO)
     y_start = int(cy) + HALO
@@ -441,17 +439,13 @@ def _has_line_color_in_tail(frame, cx, cy, players, cfg,
         return False, None, None, {}
 
     region = frame[y_start:gy1, x_left_in_zone:x_right_in_zone, :].astype(np.int32)
+    mx = region.max(axis=2)
     sat = region.max(axis=2) - region.min(axis=2)
-    sat_ok = sat >= 18
     r = region[..., 0]; g = region[..., 1]; b = region[..., 2]
 
-    # Halo для КАЖДОЙ иконки: (dx,dy) уже за пределами нашей zone_start
-    # (мы начали с y ≥ cy+HALO), и по x мы кончаемся на cx-HALO.
-    # Это уже убирает halo victory-монеты.
-
     names = [p.get("color") for p in players]
-    results = []
     counts = {}
+    samples = {}
     for idx, name in enumerate(names):
         if not name:
             continue
@@ -463,7 +457,16 @@ def _has_line_color_in_tail(frame, cx, cy, players, cfg,
                      + (g[..., None] - ref_arr[:, 1]) ** 2
                      + (b[..., None] - ref_arr[:, 2]) ** 2
                      ).min(axis=-1))
-        ok = (d <= 18) & sat_ok
+        # Выбор sat-фильтра: «плоский» эталон (белый/серый, refs sat < 10)
+        # — НЕ ставим жёсткий sat-фильтр; иначе белая нитка Изенгарда
+        # (sat~5..15) полностью теряется. Используем только mx для них.
+        refs_sat = np.array([max(int(rr[0]), int(rr[1]), int(rr[2]))
+                              - min(int(rr[0]), int(rr[1]), int(rr[2]))
+                              for rr in refs], dtype=np.int32)
+        if refs_sat.max() < 10:
+            ok = (d <= 22) & (mx >= 80)
+        else:
+            ok = (d <= 18) & (sat >= 18)
         n = int(ok.sum())
         counts[name] = n
         if ok.any():
@@ -471,25 +474,22 @@ def _has_line_color_in_tail(frame, cx, cy, players, cfg,
             top_y_local = int(ys_u.min())
             top_y_global = top_y_local + y_start
             sample = tuple(int(v) for v in region[top_y_local, int(xs_u[ys_u == top_y_local].mean())])
-            results.append((idx, name, top_y_global, n, sample))
-    if not results:
+            samples[name] = sample
+    if not counts:
         return False, None, None, counts
-    filtered = [r for r in results if r[3] >= min_tight_pixels and r[2] < cy + 400]
-    if not filtered:
-        filtered = [r for r in results if r[3] >= min_tight_pixels]
-    if not filtered:
+    max_count = max(counts.values())
+    if max_count < min_tight_pixels:
         return False, None, None, counts
-    # Победитель — маска с МАКСИМАЛЬНЫМ количеством пикселей (настоящий
-    # длинный хвост линии). У проходящих чужой линии или шума — десятки
-    # пикселей, у настоящего хвоста — 200+. Требуем leader >= 1.5x runner-up
-    # чтобы избежать ложных матчей.
-    filtered.sort(key=lambda t: -t[3])  # max count first
-    leader = filtered[0]
-    if len(filtered) > 1 and filtered[1][3] * 1.5 > leader[3] and leader[3] < 200:
-        return False, None, None, counts
-    winner_idx = leader[0]
-    sample = leader[4]
-    return True, winner_idx, sample, counts
+
+    sorted_c = sorted(counts.items(), key=lambda kv: -kv[1])
+    leader_name, leader_count = sorted_c[0]
+    # Лидер должен ЗНАЧИТЕЛЬНО превосходить второго.
+    if len(sorted_c) > 1:
+        runner_count = sorted_c[1][1]
+        if leader_count < 200 and runner_count * 1.5 > leader_count:
+            return False, None, None, counts
+    leader_idx = next((i for i, p in enumerate(players) if p.get("color") == leader_name), None)
+    return True, leader_idx, samples.get(leader_name), counts
 
 
 
