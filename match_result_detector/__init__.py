@@ -7,9 +7,9 @@
     from match_result_detector import MatchResultDetector
 
     players = [
-        {"name": "Игрок", "slot": 1, "color": "blue", "team": 1,
+        {"name": "Игрок", "slot": 1, "color": "blue", "team": "good",
          "is_local_player": True},
-        {"name": "Бот 1", "slot": 2, "color": "red", "team": 2,
+        {"name": "Бот 1", "slot": 2, "color": "red", "team": "evil",
          "is_local_player": False},
     ]
     detector = MatchResultDetector(players)
@@ -21,7 +21,7 @@
     detector.analyze_image(frame_rgb)
     detector.analyze_file("screenshot.png")
 
-Команды: 1 = Свет (добро), 2 = Тьма (зло) — см. bridge.room.ALLIANCE_ORDER.
+Команды: "good" = Свет (добро), "evil" = Тьма (зло).
 """
 
 from .detector import (MatchResultDetector, STATUS_COMPLETED,

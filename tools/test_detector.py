@@ -7,8 +7,8 @@
 
     python tools/test_detector.py _tools/screenshots/3x4_score.jpg
     python tools/test_detector.py _tools/screenshots/3x4_score.jpg --players \
-        "Игрок,blue,1,1" "Бот1,green,1,2" "Бот2,yellow,1,3" \
-        "Бот3,red,2,4" "Бот4,orange,2,5" "Бот5,purple,2,6" "Бот6,white,2,7"
+        "Игрок,blue,good,1" "Бот1,green,good,2" "Бот2,yellow,good,3" \
+        "Бот3,red,evil,4" "Бот4,orange,evil,5" "Бот5,purple,evil,6" "Бот6,white,evil,7"
 
 Если --players не задан, используются цвета по умолчанию (см. DEFAULT_PLAYERS),
 покрывающие 7-игровые скриншоты (_tools/screenshots/*.jpg).
@@ -26,14 +26,26 @@ from match_result_detector import MatchResultDetector  # noqa: E402
 # Дефолтные игроки для 7-игровых скриншотов («3х4»):
 # 3 Света + 4 Тьмы. Цвета — по привязке фракций bridge.network_prefs.
 DEFAULT_PLAYERS = [
-    {"name": "Игрок", "slot": 1, "color": "blue", "team": 1, "is_local_player": True},
-    {"name": "Бот1", "slot": 2, "color": "green", "team": 1, "is_local_player": False},
-    {"name": "Бот2", "slot": 3, "color": "yellow", "team": 1, "is_local_player": False},
-    {"name": "Бот3", "slot": 4, "color": "red", "team": 2, "is_local_player": False},
-    {"name": "Бот4", "slot": 5, "color": "orange", "team": 2, "is_local_player": False},
-    {"name": "Бот5", "slot": 6, "color": "purple", "team": 2, "is_local_player": False},
-    {"name": "Бот6", "slot": 7, "color": "white", "team": 2, "is_local_player": False},
+    {"name": "Игрок", "slot": 1, "color": "blue", "team": "good", "is_local_player": True},
+    {"name": "Бот1", "slot": 2, "color": "green", "team": "good", "is_local_player": False},
+    {"name": "Бот2", "slot": 3, "color": "yellow", "team": "good", "is_local_player": False},
+    {"name": "Бот3", "slot": 4, "color": "red", "team": "evil", "is_local_player": False},
+    {"name": "Бот4", "slot": 5, "color": "orange", "team": "evil", "is_local_player": False},
+    {"name": "Бот5", "slot": 6, "color": "purple", "team": "evil", "is_local_player": False},
+    {"name": "Бот6", "slot": 7, "color": "white", "team": "evil", "is_local_player": False},
 ]
+
+
+def _parse_team(value):
+    """Принять good/evil (или старые числа 1/2)."""
+    v = str(value).strip().lower()
+    if v in ("good", "свет", "добро"):
+        return "good"
+    if v in ("evil", "тьма", "зло"):
+        return "evil"
+    if v.isdigit():
+        return int(v)
+    return value
 
 
 def parse_players(args):
@@ -43,7 +55,7 @@ def parse_players(args):
         parts = [p.strip() for p in spec.split(",")]
         name = parts[0]
         color = parts[1] if len(parts) > 1 else "blue"
-        team = int(parts[2]) if len(parts) > 2 else 1
+        team = _parse_team(parts[2]) if len(parts) > 2 else "good"
         slot = int(parts[3]) if len(parts) > 3 else len(players) + 1
         players.append({"name": name, "color": color, "team": team,
                         "slot": slot, "is_local_player": (len(players) == 0)})

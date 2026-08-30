@@ -205,6 +205,18 @@ def _process_name_map():
     return pmap
 
 
+def process_pids(names=None):
+    """Вернуть {pid: lowercase exe} для процессов, имена которых в names.
+
+    names: набор имён файлов (без пути) или None -> все процессы.
+    """
+    pmap = _process_name_map()
+    if not names:
+        return dict(pmap)
+    wanted = {str(n).lower() for n in names}
+    return {pid: name for pid, name in pmap.items() if name in wanted}
+
+
 def list_windows():
     """Enumerate ALL top-level windows -> list of dicts (title, class, pid, name)."""
     pmap = _process_name_map()  # build once for this enumeration

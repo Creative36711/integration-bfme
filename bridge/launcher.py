@@ -16,6 +16,8 @@ How RotWK actually starts
 
 import ctypes
 import subprocess
+import sys
+import time
 import winreg
 from ctypes import wintypes
 from pathlib import Path
@@ -23,7 +25,19 @@ from pathlib import Path
 from bridge.log import log
 
 EXE_NAME = "lotrbfme2ep1.exe"
+ALT_EXE_NAME = "lotrbfme2.exe"
 GAME_PROCESS = "game.dat"  # the actual game binary (launcher spawns it)
+GAME_PROCESS_NAMES = (GAME_PROCESS, EXE_NAME, ALT_EXE_NAME)
+
+# Для принудительного закрытия уже запущенной игры.
+kernel32 = ctypes.windll.kernel32
+PROCESS_TERMINATE = 0x0001
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.TerminateProcess.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
 
 # Registry locations where the install path may be recorded (most common first).
 # value_name=None means "read the default value" (App Paths stores the full
@@ -84,6 +98,53 @@ def _value_to_exe_path(value):
         return p
     candidate = p / EXE_NAME
     return candidate if candidate.exists() else p / GAME_PROCESS
+
+
+def game_process_pids():
+    """{pid: exe_name} для уже запущенных процессов игры/лаунчера."""
+    try:
+        from bridge import navigate as nav
+    except Exception:  # noqa: BLE001
+        return {}
+    return nav.process_pids(GAME_PROCESS_NAMES)
+
+
+def is_game_running():
+    """True, если игра (game.dat/лаунчер) уже запущена."""
+    return bool(game_process_pids())
+
+
+def stop_game():
+    """Принудительно закрыть уже запущенную игру/лаунчер.
+
+    Возвращает True, если после остановки ни одного игрового процесса не
+    осталось (или их и не было). Используется ПЕРЕД новым запуском, чтобы
+    не стартовать две копии игры.
+    """
+    pids = game_process_pids()
+    if not pids:
+        return True
+    for pid, name in sorted(pids.items()):
+        log(f"[stop] закрываю уже запущенную игру: {name} (pid={pid})")
+        handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if not handle:
+            log(f"[stop] WARNING: не удалось открыть процесс {name} "
+                f"(pid={pid})", file=sys.stderr)
+            continue
+        kernel32.TerminateProcess(handle, 1)
+        kernel32.CloseHandle(handle)
+
+    # Подождать, пока ОС реально снимет процессы.
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline and game_process_pids():
+        time.sleep(0.25)
+    remaining = game_process_pids()
+    if remaining:
+        log(f"[stop] WARNING: процессы остались: {remaining}",
+            file=sys.stderr)
+        return False
+    log("[stop] игра закрыта")
+    return True
 
 
 def discover_exe(explicit=None):

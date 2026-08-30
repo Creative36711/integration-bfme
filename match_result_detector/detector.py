@@ -16,13 +16,15 @@
 Формат результата (config/match_result.json):
     {
       "match_status": "COMPLETED" | "SURRENDER" | "UNKNOWN",
-      "winning_team": 1 | 2 | null,
-      "losing_team": 2 | 1 | null,
+      "winning_team": "good" | "evil" | null,
+      "losing_team": "evil" | "good" | null,
+      "winning_team_label": "Добро" | "Зло" | null,
+      "losing_team_label": "Зло" | "Добро" | null,
       "winners": [...], "losers": [...], "unmatched_players": [...],
       "raw_data": {...}
     }
 
-Команды: 1 = Свет (добро), 2 = Тьма (зло) — bridge.room.ALLIANCE_ORDER.
+Команды: "good" = Свет (добро), "evil" = Тьма (зло).
 """
 
 import json
@@ -155,8 +157,8 @@ class MatchResultDetector:
         """Создать детектор.
 
         Args:
-            players: список dict: name, color (blue/red/...), team (1/2),
-                is_local_player, slot.
+            players: список dict: name, color (blue/red/...), team
+                ("good"/"evil"), is_local_player, slot.
             screen_resolution: (w, h); если неизвестно, берётся из кадра.
             capture: callable -> (H, W, 3) numpy RGB.
             config: dict переопределений DetectorConfig.
@@ -477,21 +479,72 @@ class MatchResultDetector:
             return result
 
         # --- Путь 2: статичный кадр (без кликов) -----------------------
-        for ic in icons:
-            idx = self._icon_to_player_index(base_frame, ic)
-            assignments.append({
-                "kind": ic["kind"], "cx": ic["cx"], "cy": ic["cy"],
-                "score": ic["score"], "player": idx,
-                "color_side": self.players[idx].get("color") if idx is not None else None,
-            })
+        assignments, log_static = self._match_by_static_lines(base_frame, icons)
 
         result = player_matcher.build_result(self.players, assignments, raw={})
         result["raw_data"]["icons"] = assignments
         result["raw_data"]["highlight_assignments"] = log_vivid
+        result["raw_data"]["static_assignments"] = log_static
         result["raw_data"]["click_slots"] = False
         if self._cfg.debug:
             self._save_debug(base_frame, assignments, result)
         return result
+
+    def _match_by_static_lines(self, frame, icons):
+        """Путь 2: статичный кадр БЕЗ кликов по слотам.
+
+        Для каждого игрока ищем правый конец его линии (по известному цвету)
+        и сопоставляем его с ближайшей иконкой. Это тот же приём, что и
+        click-highlight, но без переключения слота: при обычном экране
+        «Счёт» линии остаются приглушёнными, поэтому bright_only=False.
+
+        Returns:
+            (assignments, log_entries).
+        """
+        resolved = {}       # index иконки (по (cx,cy)) -> player idx
+        log_static = []
+        max_x_gap = 80.0
+        max_y_gap = 60.0
+
+        findings = []       # (player_idx, icon, dist)
+        for idx, p in enumerate(self.players):
+            color = p.get("color")
+            if not color:
+                continue
+            x_end, y_end, _ = color_analyzer.find_highlighted_line_endpoint(
+                frame, color, self._cfg, exclude_icons=icons,
+                near_icons=icons, y_band=55.0, bright_only=False)
+            if x_end is None:
+                continue
+            for ic in icons:
+                dx = abs(float(ic["cx"]) - x_end)
+                dy = abs(float(ic["cy"]) - y_end)
+                if dx <= max_x_gap and dy <= max_y_gap:
+                    dist = float(np.hypot(x_end - ic["cx"], y_end - ic["cy"]))
+                    findings.append((dist, idx, ic))
+                    log_static.append((color, p.get("slot"),
+                                       ic["kind"], x_end, y_end,
+                                       round(dist, 1)))
+
+        # Каждую иконку берёт самый близкий к ней игрок.
+        findings.sort(key=lambda f: f[0])
+        for dist, idx, ic in findings:
+            key = (ic["cx"], ic["cy"])
+            if key in resolved:
+                continue
+            resolved[key] = idx
+
+        assignments = []
+        for ic in icons:
+            key = (ic["cx"], ic["cy"])
+            idx = resolved.get(key)
+            assignments.append({
+                "kind": ic["kind"], "cx": ic["cx"], "cy": ic["cy"],
+                "score": ic["score"], "player": idx,
+                "color_side": self.players[idx].get("color")
+                if idx is not None else None,
+            })
+        return assignments, log_static
 
     def _match_by_highlight(self, frame, icons, log_vivid):
         """Путь 1: клики по слотам «Рейтинга» + яркая линия.
@@ -503,7 +556,7 @@ class MatchResultDetector:
           * defeat-иконка   -> кликаем СЛЕДУЮЩИЙ слот 2..8, повторяем;
           * ни victory, ни defeat (линия не дошла до иконки / нет яркой
             линии) -> игрок сдался: побеждает игрок на стороне соперника,
-            команда игрока (team 1) проигрывает.
+            команда сдавшегося проигрывает.
 
         Returns:
             (icon_assignments, surrendered_idx).
@@ -519,12 +572,12 @@ class MatchResultDetector:
 
         slots = [1] + sorted({p.get("slot", 1) for p in self.players
                               if p.get("slot", 1) > 1})
+        stop_scanning = False
         for slot in slots:
-            if winner_slot is not None:
-                # Победитель уже найден — остальные слоты не опрашиваем
-                # (их линия могла не успеть «включиться»).
-                surrendered_slots.add(slot)
-                continue
+            if winner_slot is not None or stop_scanning:
+                # Победитель уже найден (или зафиксирована сдача) — больше
+                # НИ ОДИН слот не опрашиваем и НЕ кликаем.
+                break
             color = None
             p_slot = self._player_by_slot(slot)
             if p_slot is not None:
@@ -567,7 +620,9 @@ class MatchResultDetector:
                         (color, slot, ic["kind"], x_end, y_end, round(dist, 1)))
                     if ic["kind"] == "victory":
                         winner_slot = slot
-                        # Победитель найден — больше слотов НЕ кликаем.
+                        # Победитель найден — останавливаемся сразу, слоты
+                        # 2..8 НЕ кликаем и даже не добавляем как surrendered.
+                        stop_scanning = True
                         break
                     # defeat-иконка: по регламенту кликаем следующий слот.
                 else:
@@ -576,6 +631,8 @@ class MatchResultDetector:
                         (color, slot, "SURRENDER", x_end, y_end, None))
                     # No marker: this is the explicit surrender signal.
                     # Do not probe later slots after it.
+                    stop_scanning = True
+                if stop_scanning:
                     break
             else:
                 # Яркой линии не нашли вообще — считаем сдачей.
@@ -712,6 +769,7 @@ class MatchResultDetector:
         return {
             "match_status": STATUS_UNKNOWN,
             "winning_team": None, "losing_team": None,
+            "winning_team_label": None, "losing_team_label": None,
             "winners": [], "losers": [], "unmatched_players": [],
             "raw_data": {"error": error},
         }
