@@ -671,7 +671,11 @@ def main(argv=None):
             players = match_players.player_list(faction, bot_factions)
             log(f"[match] игроков: {len(players)} (слоты "
                 f"{[p['slot'] for p in players]})")
-            monitor_match_result(players, md_cfg, lock_input=lock_input)
+            result = monitor_match_result(players, md_cfg, lock_input=lock_input)
+            # The match-result monitor is the terminal step of the normal
+            # automation flow.  Do not continue into any post-match/menu loop
+            # after a result has been written.
+            log("[done] результат матча обработан; программа остановлена")
             return 0
         log("[match] определение результата отключено (--no-monitor / config)")
         return 0
