@@ -2,5 +2,15 @@
   "exe_path": "C:\\RotWK\\lotrbfme2ep1.exe",
   "args": [],
   "lock_input": true,
-  "network_rules": "0 0 0 400 1000 -1 -1 -1 -1 -1"
+  "network_rules": "0 0 0 400 1000 -1 -1 -1 -1 -1",
+  "match_detector": {
+    "monitor": true,
+    "monitor_timeout": 1500,
+    "icon_threshold": 0.60,
+    "click_slots": true,
+    "click_skip": true,
+    "click_score_tab": true,
+    "debug": false,
+    "max_player_color_distance": 80.0
+  }
 }

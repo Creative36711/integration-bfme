@@ -14,3 +14,8 @@ calibrate_log.txt
 config/calibrate_coords.txt
 config/menu_marker.npy
 config/menu_marker.json
+
+# Результат определения команды-победителя (генерируется на лету)
+config/match_result.json
+config/match_debug/
+.venv/

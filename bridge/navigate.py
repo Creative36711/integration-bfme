@@ -43,6 +43,18 @@ user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 user32.GetCursorPos.restype = wintypes.BOOL
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 user32.GetSystemMetrics.restype = ctypes.c_int
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = wintypes.BOOL
+user32.SetActiveWindow.argtypes = [wintypes.HWND]
+user32.SetActiveWindow.restype = wintypes.HWND
+user32.SetFocus.argtypes = [wintypes.HWND]
+user32.SetFocus.restype = wintypes.HWND
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+
+SW_RESTORE = 9
 
 kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
@@ -302,6 +314,32 @@ def viewport():
         return None
     l, t, r, b = get_client_rect(hwnd)
     return l, t, r - l, b - t
+
+
+def activate_window(hwnd=None):
+    """Вывести окно игры на передний план и отдать ему фокус.
+
+    НУЖНО для холодного запуска: сразу после появления окна (game.dat) игра
+    ещё может не иметь фокуса / сворачиваться из-за заставки, поэтому
+    ПЕРВЫЕ инжектируемые move/click уходят «в пустоту». Активация окна
+    гарантирует, что последующие SendInput-события попадают в игру.
+
+    Возвращает True, если окно найдено и активировано.
+    """
+    if hwnd is None:
+        hwnd, _how = find_game_window()
+        if not hwnd:
+            return False
+    try:
+        if not user32.IsWindowVisible(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.SetForegroundWindow(hwnd)
+        user32.BringWindowToTop(hwnd)
+        user32.SetActiveWindow(hwnd)
+        user32.SetFocus(hwnd)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------

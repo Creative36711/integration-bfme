@@ -11,12 +11,15 @@ Flow:
     -> запуск игры (полный экран) -> окно -> главное меню
     -> «Сеть» -> «Лок. сеть» -> «Создать игру» -> комната
     -> выставить сложность слотам ботов (2..N)
+    -> бой -> экран статистики -> определение команды-победителя
+       (match_result_detector) -> config/match_result.json
 
 Задержки — в bridge/timings.py. Координаты слотов — bridge/room.py,
 кнопок меню — config/menu_positions.json.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -30,6 +33,7 @@ from bridge import input_lock
 from bridge import launcher
 from bridge.log import log, start as log_start
 from bridge import maps
+from bridge import match_players
 from bridge import menu
 from bridge import navigate as nav
 from bridge import network_prefs
@@ -37,6 +41,12 @@ from bridge import room
 from bridge import spawn
 from bridge import timings
 from bridge import visual_ready
+
+try:
+    from match_result_detector import MatchResultDetector, STATUS_UNKNOWN
+except ImportError:  # модуль опционален
+    MatchResultDetector = None
+    STATUS_UNKNOWN = "UNKNOWN"
 
 T = timings.TIMINGS
 
@@ -327,6 +337,70 @@ def ask_handicaps(total_players):
     return handicaps
 
 
+def write_match_result(result):
+    """Записать итог матча в config/match_result.json."""
+    out = os.path.join(config.CONFIG_DIR, "match_result.json")
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        log(f"[match] результат записан: {out}")
+    except OSError as e:
+        log(f"[match] ОШИБКА записи {out}: {e}", file=sys.stderr)
+
+
+def _lock_for_stats():
+    """Заблокировать физический ввод на время сбора статистики."""
+    ok = input_lock.lock()
+    if ok:
+        log("[lock] input blocked (stats gathering)")
+    else:
+        log("[lock] WARNING: input lock failed during stats gathering", file=sys.stderr)
+
+
+def _unlock_after_stats():
+    """Разблокировать физический ввод после сбора статистики."""
+    input_lock.unlock()
+    log("[lock] input unblocked (stats done)")
+
+
+def monitor_match_result(players, detector_cfg, lock_input=True):
+    """Дождаться экрана статистики и определить команду-победителя.
+
+    Блокирует выполнение до появления результатов (или до таймаута).
+    Записывает результат в config/match_result.json.
+
+    Во время кликов по вкладкам/слотам блокирует физический ввод: залочиваем
+    его, когда детектор видит ЭКРАН СТАТИСТИКИ (fortress_icon + score_marker),
+    и разблокируем после анализа. Это защищает быстрые клики автоматизации от
+    вмешательства пользователя.
+    """
+    if MatchResultDetector is None:
+        log("[match] match_result_detector не установлен — пропускаю", file=sys.stderr)
+        return None
+
+    log(f"[match] жду экран статистики (до {detector_cfg.get('monitor_timeout', 1500)}s)...")
+    detector = MatchResultDetector(
+        players,
+        config=detector_cfg,
+        capture=nav.capture_window,
+        click=nav.click,
+        game_alive=lambda: nav.find_game_window(require_visible=False)[0] is not None,
+    )
+    if lock_input:
+        detector.on_score_screen_detected = _lock_for_stats
+        detector.on_analysis_finished = _unlock_after_stats
+    result = detector.wait_for_result(timeout=detector_cfg.get("monitor_timeout", 1500))
+    if not result:
+        result = {"match_status": STATUS_UNKNOWN, "winning_team": None,
+                  "losing_team": None, "winners": [], "losers": [],
+                  "unmatched_players": [],
+                  "raw_data": {"error": "no result (monitor timeout)"}}
+    write_match_result(result)
+    log(f"[match] результат: status={result.get('match_status')} "
+        f"winning_team={result.get('winning_team')}")
+    return result
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="launch game and auto-configure a battle")
     ap.add_argument("--exe", help="explicit game/launcher path")
@@ -337,6 +411,9 @@ def main(argv=None):
                     help="launch through UAC prompt")
     ap.add_argument("--stop-at", choices=["lan", "create"], default="create",
                     help="lan = stop after entering LAN; create = also click Create Game")
+    ap.add_argument("--no-monitor", dest="monitor", action="store_false",
+                    help="don't detect the match result after the battle (offline/testing)")
+    ap.set_defaults(monitor=None)  # None -> resolve from config.json later
     ap.add_argument("--lock-input", dest="lock_input", action="store_true", default=None,
                     help="block the user's physical keyboard/mouse during "
                          "navigation (ON by default via config.json)")
@@ -521,6 +598,13 @@ def main(argv=None):
             log(f"[wait] маркера нет — пауза {T['menu_load']:.0f}s (заставки)...")
             time.sleep(T["menu_load"])
 
+        # 3b. Прогреть ввод: вывести окно игры на передний план и дать игре
+        #     ~menu_settle c, чтобы ПЕРВЫЙ move/click не ушёл «в пустоту».
+        #     Особенно важно при холодном запуске: окно (game.dat) появляется,
+        #     но ещё ~0.5-1 c не принимает инжектируемый SendInput.
+        nav.activate_window(hwnd)
+        time.sleep(T["menu_settle"])
+
         # 4. Network -> Local Network
         log("[nav] Сеть -> Лок. сеть")
         if not menu.goto_lan():
@@ -568,6 +652,32 @@ def main(argv=None):
         time.sleep(T["start_countdown"])
 
         log("[done] бой запущен")
+
+        # Во время БОЯ ввод разблокируем (пользователь не заперт на всё
+        # ожидание результата). Но как только детектор УВИДИТ экран статистики
+        # (fortress_icon + score_marker), ввод снова блокируется на время
+        # кликов по вкладкам/слотам (см. monitor_match_result / _lock_for_stats).
+        if locked:
+            input_lock.unlock()
+            locked = False
+            log("[lock] user input unblocked (battle starts)")
+
+        # 9. Определить команду-победителя по экрану статистики.
+        #    Список игроков: цвета/команды каждого слота известны заранее.
+        md_cfg = cfg.get("match_detector", {}) or {}
+        monitor = args.monitor if args.monitor is not None \
+            else md_cfg.get("monitor", False)
+        if monitor:
+            players = match_players.player_list(faction, bot_factions)
+            log(f"[match] игроков: {len(players)} (слоты "
+                f"{[p['slot'] for p in players]})")
+            result = monitor_match_result(players, md_cfg, lock_input=lock_input)
+            # The match-result monitor is the terminal step of the normal
+            # automation flow.  Do not continue into any post-match/menu loop
+            # after a result has been written.
+            log("[done] результат матча обработан; программа остановлена")
+            return 0
+        log("[match] определение результата отключено (--no-monitor / config)")
         return 0
     finally:
         if locked:
