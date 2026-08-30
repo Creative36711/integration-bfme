@@ -180,6 +180,7 @@ class MatchResultDetector:
 
         self._templates: Dict[str, np.ndarray] = {}
         self._monitor: Optional[ScoreScreenMonitor] = None
+        self._timeout_timer: Optional[threading.Timer] = None
         self._result: Optional[Dict[str, Any]] = None
         self._result_event = threading.Event()
         self._analysis_lock = threading.Lock()
@@ -195,6 +196,7 @@ class MatchResultDetector:
     # ------------------------------------------------------------------
     def start_monitoring(self, on_result_callback: Optional[Callable] = None,
                          timeout: Optional[float] = None) -> None:
+        self.stop_monitoring()
         self._result = None
         self._result_event.clear()
         self._on_result_callback = on_result_callback
@@ -208,12 +210,20 @@ class MatchResultDetector:
         )
         self._monitor.start()
         if timeout:
-            threading.Timer(timeout, self.stop_monitoring).start()
+            timer = threading.Timer(timeout, self.stop_monitoring)
+            # The timeout is only a safety net. It must never keep the whole
+            # application alive after the result has already been produced.
+            timer.daemon = True
+            self._timeout_timer = timer
+            timer.start()
 
     def stop_monitoring(self) -> None:
         if self._monitor:
             self._monitor.stop()
             self._monitor = None
+        if self._timeout_timer is not None:
+            self._timeout_timer.cancel()
+            self._timeout_timer = None
 
     def is_monitoring(self) -> bool:
         return bool(self._monitor and self._monitor.is_alive())
@@ -222,9 +232,14 @@ class MatchResultDetector:
         if not self.is_monitoring():
             self.start_monitoring(timeout=self._cfg.monitor_timeout)
         self._result_event.wait(timeout=timeout)
-        if self._result is None:
+        # The analysis callback sets the event before the monitor is returned.
+        # Stop/cancel all helper threads before handing control back to main;
+        # this makes a completed result the terminal operation of the app.
+        result = self._result
+        self.stop_monitoring()
+        if result is None:
             return self._unknown("no result (monitor stopped or timeout)")
-        return self._result
+        return result
 
     def analyze_current_screen(self) -> Dict[str, Any]:
         frame = self._capture_frame()
