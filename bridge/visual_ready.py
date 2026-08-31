@@ -121,10 +121,17 @@ def wait_ready(template, meta, match=DEFAULT_MATCH, tolerance=DEFAULT_TOLERANCE,
 def load_marker_image(path):
     """Загрузить маркер-картинку (JPG/PNG) как RGB numpy (H, W, 3).
 
-    Возвращает None, если файла нет или он не читается.
+    Использует загрузчик match_result_detector.icon_finder (cv2 или PIL);
+    если оба недоступны — fallback на PIL. Возвращает None, если файла нет
+    или он не читается (тогда код просто ждёт по таймеру).
     """
     if not path or not os.path.exists(path):
         return None
+    finder = _icon_finder()
+    if finder is not None:
+        img = finder.load_png(path)
+        if img is not None:
+            return img
     try:
         from PIL import Image
         with Image.open(path) as im:
