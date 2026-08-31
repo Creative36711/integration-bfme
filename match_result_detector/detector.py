@@ -189,6 +189,9 @@ class MatchResultDetector:
 
         self._capture_fail_reason = None
 
+        # Маркер экрана «Статистика» (кэш; None = не загрузился).
+        self._stats_marker_cache = None
+
         # Каллбэки жизненного цикла.
         self.on_score_screen_detected: Optional[Callable] = None
         self.on_analysis_finished: Optional[Callable] = None
@@ -363,23 +366,56 @@ class MatchResultDetector:
         self._result_event.set()
 
     def _analyze_score_screen(self):
+        """Анализ экрана статистики со СТОРОЖЕВЫМ ЦИКЛОМ (проблема 3).
+
+        Проблема: пользователь может успеть нажать «Пропустить» ДО блокировки
+        ввода (окно ~0.3–1.5с после появления статистики). Тогда анимация
+        заканчивается, и НАШ клик «Пропустить» в ту же точку попадает по
+        «Далее» — мы улетаем на экран «Статистика», а анализировать нужно
+        график.
+
+        Решение (A+B):
+          * «Пропустить» жмём, но СРАЗУ после клика проверяем маркер
+            «Статистики» (_tools/Маркер статистики.jpg); если мы там — жмём
+            «Назад» (back_button_frac) и возвращаемся на график;
+          * перед каждым анализом и на каждой итерации ожидания кадра
+            сверяемся с маркером «Статистики» и повторяем возврат, пока не
+            окажемся на графике (подтверждение графика — is_score_screen:
+            fortress_icon + score_screen_marker).
+        """
         try:
+            # «Пропустить» ускоряет отрисовку вкладок (иначе ~15с).
             if self._cfg.click_skip:
                 self._click_skip()
+
+            # Страховка: если после клика мы на «Статистике» — «Назад».
+            recovered = self._recover_if_on_stats_screen()
             if self._cfg.click_score_tab:
+                if recovered:
+                    time.sleep(self._cfg.tab_settle)
                 self._click_score_tab()
 
-            # Ожидаем стабильный кадр с иконками.
+            # Ждём стабильный кадр ГРАФИКА (не «Статистику», не чёрный кадр).
             frame = None
             deadline = time.monotonic() + self._cfg.analysis_timeout
             while time.monotonic() < deadline:
+                # 1) сторожевой маркер: мы на «Статистике» -> «Назад», повтор.
+                if self._on_stats_screen():
+                    log.info("на экране «Статистика» — жму «Назад», возврат на график")
+                    self._click_back()
+                    continue
+                # 2) ждём не-чёрный кадр графика статистики.
                 f = self._capture_frame()
-                if f is not None and not _is_black_frame(f):
-                    frame = f
-                    break
-                time.sleep(self._cfg.analysis_retry_delay)
+                if f is None or _is_black_frame(f):
+                    time.sleep(self._cfg.analysis_retry_delay)
+                    continue
+                if not self.is_score_screen(f):
+                    time.sleep(self._cfg.analysis_retry_delay)
+                    continue
+                frame = f
+                break
             if frame is None:
-                self._result = self._unknown("no valid frame")
+                self._result = self._unknown("no valid frame (chart screen)")
                 self._result_event.set()
                 return
 
@@ -405,6 +441,68 @@ class MatchResultDetector:
                     fb()
                 except Exception:  # noqa: BLE001
                     log.exception("on_analysis_finished callback failed")
+
+    def _stats_marker_template(self):
+        """Загрузить маркер «Статистики» (кэшируется). None, если не задан."""
+        if self._stats_marker_cache is not None:
+            return self._stats_marker_cache
+        path = self._cfg.stats_marker_path
+        tpl = None
+        if path and os.path.exists(path):
+            tpl = icon_finder.load_png(path)
+        self._stats_marker_cache = tpl
+        return tpl
+
+    def _on_stats_screen(self, frame=None):
+        """True, если текущий кадр — экран «Статистика» (а не график).
+
+        Определяется по маркеру «Статистики» (_tools/Маркер статистики.jpg):
+        NCC ~0.999 на «Статистике», <=0.73 на графике/лобби, порог 0.85.
+        """
+        if frame is None:
+            frame = self._capture_frame()
+            if frame is None:
+                return False
+        h, w = frame.shape[:2]
+        tpl = self._stats_marker_template()
+        if tpl is None:
+            return False
+        scale = self._cfg.scale_for(w, h)
+        th = max(4, int(round(tpl.shape[0] * scale)))
+        tw = max(4, int(round(tpl.shape[1] * scale)))
+        t = icon_finder.resize_image(tpl, tw, th)
+        roi = self._cfg.roi_pixels(self._cfg.stats_marker_roi, w, h)
+        hits = icon_finder.find_template(
+            frame, t, roi, self._cfg.stats_marker_threshold,
+            nms_distance=max(4, t.shape[1] / 2))
+        return bool(hits)
+
+    def _click_back(self):
+        """Клик по кнопке «Назад» на экране «Статистика» (возврат на график)."""
+        try:
+            vp = self._viewport()
+            if not vp:
+                self._log_no_viewport("back")
+                return
+            left, top, W, H = vp
+            fx, fy = self._cfg.back_button_frac
+            self._click(left + int(fx * W), top + int(fy * H))
+            log.info("clicked 'Назад'")
+            time.sleep(self._cfg.tab_settle)
+        except Exception:  # noqa: BLE001
+            log.exception("_click_back failed")
+
+    def _recover_if_on_stats_screen(self):
+        """Если мы на «Статистике» (клик ушёл в «Далее») — вернуться «Назад».
+
+        Возвращает True, если пришлось восстанавливаться.
+        """
+        if not self._on_stats_screen():
+            return False
+        log.info("обнаружен экран «Статистика» (клик «Пропустить» ушёл в "
+                 "«Далее») — жму «Назад»")
+        self._click_back()
+        return True
 
     def _detect_all_icons(self, frame):
         """Найти все иконки победы/поражения в области графика."""

@@ -483,53 +483,57 @@ def distribute_units(units):
 # ---------------------------------------------------------------------------
 # Сборка ini и .big
 # ---------------------------------------------------------------------------
-# Базовый объект золота — генерируется ОДИН раз; дочерние объекты
-# (WOTR_StartingGold_Player_N) переопределяют суммы через ReplaceModule.
+# Базовый объект золота — генерируется ОДИН раз (проверенный рабочий код:
+# арт PchestTreasure, SalvageCrateCollide + DeletionUpdate). Дочерние объекты
+# (WOTR_StartingGold_Player_N) переопределяют суммы и «вечность» через
+# ReplaceModule ModuleTag_02 / ModuleTag_03.
 GOLD_BASE_OBJECT = """\
 Object WOTR_StartingGold
 
-    Draw = W3DScriptedModelDraw ModuleTag_01
-        DefaultModelConditionState
-            Model = PchestTreasure
-            ParticleSysBone NONE GoldChestGlimmer
-            ParticleSysBone NONE GoldChestGlimmer02
-            ParticleSysBone NONE GoldChestRedGlimmer
-            ParticleSysBone NONE GoldChestGreenGlimmer
-            ParticleSysBone NONE GoldChestAura
-        End
+  ; *** ART Parameters *** (Any art changes made to this Object, please copy over to SalvageCrate_Final below)
+  Draw = W3DScriptedModelDraw ModuleTag_01
+    DefaultModelConditionState
+      Model = PchestTreasure
+      ParticleSysBone NONE GoldChestGlimmer
+      ParticleSysBone NONE GoldChestGlimmer02
+      ParticleSysBone NONE GoldChestRedGlimmer
+      ParticleSysBone NONE GoldChestGreenGlimmer
+      ParticleSysBone NONE GoldChestAura
     End
+  End
+  ; ***DESIGN parameters ***
+  EditorSorting   = MISC_MAN_MADE
+  DisplayName        = OBJECT:TreasureChest
+    Side             = Civilian
+  ; *** ENGINEERING Parameters ***
+  KindOf = SELECTABLE PARACHUTABLE IMMOBILE NOT_AUTOACQUIRABLE UNATTACKABLE CRATE
+  ThreatLevel = 0.0
 
-    EditorSorting   = MISC_MAN_MADE
-    DisplayName     = OBJECT:TreasureChest
-    Side            = Civilian
+  Body = HighlanderBody ModuleTag_04
+    MaxHealth      = 1.0
+  End
 
-    KindOf = SELECTABLE PARACHUTABLE IMMOBILE NOT_AUTOACQUIRABLE UNATTACKABLE CRATE
-
-    ThreatLevel = 0.0
-
-    Body = HighlanderBody ModuleTag_04
-        MaxHealth = 1.0
-    End
-
-    Behavior = SalvageCrateCollide ModuleTag_02
-        ForbiddenKindOf  = PROJECTILE ENVIRONMENT IGNORED_IN_GUI NEUTRALGOLLUM
-        BannerChance     = 0%
-        LevelUpChance    = 0%
-        LevelUpRadius    = 0.0
-        ResourceChance   = 100%
-        MinResource      = 0
-        MaxResource      = 0
-        AllowAIPickup    = Yes
-        ExecuteFX        = FX_GoldChestPickup
-    End
-
-    Geometry            = BOX
-    GeometryMajorRadius = 12.0
-    GeometryMinorRadius = 12.0
-    GeometryHeight      = 12.0
-    GeometryIsSmall     = Yes
-    Shadow              = SHADOW_VOLUME
-
+  Behavior = SalvageCrateCollide ModuleTag_02
+    ForbiddenKindOf = PROJECTILE ENVIRONMENT IGNORED_IN_GUI
+    ExecuteFX = FX_GoldChestPickup
+    BannerChance = 10%
+    LevelUpChance = 100%
+    LevelUpRadius = 100.0
+    ResourceChance = 20%
+    MinResource = 25
+    MaxResource = 75
+    AllowAIPickup = No
+  End
+  Behavior = DeletionUpdate ModuleTag_03
+    MinLifetime = 30000
+    MaxLifetime = 35000
+  End
+  Geometry = BOX
+  GeometryMajorRadius = 12.0
+  GeometryMinorRadius = 12.0
+  GeometryHeight = 12.0
+  GeometryIsSmall = Yes
+  Shadow          = SHADOW_VOLUME
 End
 """
 
@@ -541,22 +545,40 @@ def build_gold_base():
 
 def build_gold_child(slot, amount):
     """ChildObject WOTR_StartingGold_Player_N — суммы золота для конкретного
-    игрока. Переопределяет SalvageCrateCollide (ModuleTag_02) базового объекта
-    через ReplaceModule: MinResource = MaxResource = amount (рандома нет)."""
+    игрока. Переопределяет модули базового объекта:
+      * ModuleTag_02 (SalvageCrateCollide): 100% шанс, Min = Max = amount
+        (рандома нет), AllowAIPickup = Yes, ExecuteFX сохранён;
+      * ModuleTag_03 (DeletionUpdate): Min/MaxLifetime = -1 (сундук НЕ исчезает,
+        пока игрок не подберёт золото)."""
     return "\n".join([
         f"ChildObject WOTR_StartingGold_Player_{slot} WOTR_StartingGold",
         "",
-        "ReplaceModule ModuleTag_02",
+        "    ReplaceModule ModuleTag_02",
         "",
-        "    Behavior = SalvageCrateCollide ModuleTag_022",
+        "        Behavior = SalvageCrateCollide ModuleTag_022",
         "",
-        "        ResourceChance = 100%",
-        f"        MinResource    = {amount}   ; рандома нет, Min = Max",
-        f"        MaxResource    = {amount}",
-        "        AllowAIPickup  = Yes",
+        "            ForbiddenKindOf = PROJECTILE ENVIRONMENT IGNORED_IN_GUI NEUTRALGOLLUM",
+        "            BannerChance = 0%",
+        "            LevelUpChance = 0%",
+        "            LevelUpRadius = 0.0",
+        "            ResourceChance = 100%",
+        f"            MinResource = {amount}",
+        f"            MaxResource = {amount}",
+        "            AllowAIPickup = Yes",
+        "            ExecuteFX = FX_GoldChestPickup",
+        "        End",
+        "",
         "    End",
         "",
-        "End",
+        "    ReplaceModule ModuleTag_03",
+        "",
+        "        Behavior = DeletionUpdate ModuleTag_033",
+        "",
+        "            MinLifetime = -1",
+        "            MaxLifetime = -1",
+        "        End",
+        "",
+        "    End",
         "",
         "End",
         "",

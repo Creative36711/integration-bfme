@@ -217,32 +217,48 @@ End
 ; ============================================================
 
 ; --- Стартовое золото: базовый объект + дочерние (все игроки) ---
-Object WOTR_StartingGold                       ; полный код базового объекта
-    Draw = W3DScriptedModelDraw ModuleTag_01
-        DefaultModelConditionState
-            Model = PchestTreasure
-            ; ... партиклы GoldChest* ...
-        End
+Object WOTR_StartingGold                       ; полный рабочий код (один раз)
+  Draw = W3DScriptedModelDraw ModuleTag_01
+    DefaultModelConditionState
+      Model = PchestTreasure
+      ParticleSysBone NONE GoldChestGlimmer
+      ; ... GoldChestGlimmer02 / Red / Green / Aura ...
     End
-    Behavior = SalvageCrateCollide ModuleTag_02
-        ResourceChance = 100%
-        MinResource    = 0
-        MaxResource    = 0
-        AllowAIPickup  = Yes
-        ExecuteFX      = FX_GoldChestPickup
-    End
-    ; ...
+  End
+  KindOf = SELECTABLE PARACHUTABLE IMMOBILE NOT_AUTOACQUIRABLE UNATTACKABLE CRATE
+  Behavior = SalvageCrateCollide ModuleTag_02   ; базовые значения (для «диких» сундуков)
+    ForbiddenKindOf = PROJECTILE ENVIRONMENT IGNORED_IN_GUI
+    ExecuteFX = FX_GoldChestPickup
+    ResourceChance = 20%    ; MinResource = 25, MaxResource = 75 и т.д.
+    AllowAIPickup = No
+  End
+  Behavior = DeletionUpdate ModuleTag_03        ; сундук исчезает через 30–35с
+    MinLifetime = 30000
+    MaxLifetime = 35000
+  End
+  ; ...
 End
 
 ChildObject WOTR_StartingGold_Player_1 WOTR_StartingGold
-ReplaceModule ModuleTag_02
-    Behavior = SalvageCrateCollide ModuleTag_022
-        ResourceChance = 100%
-        MinResource    = 7000   ; рандома нет, Min = Max
-        MaxResource    = 7000
-        AllowAIPickup  = Yes
+    ReplaceModule ModuleTag_02                  ; 100% шанс, сумма = ответ
+        Behavior = SalvageCrateCollide ModuleTag_022
+            ForbiddenKindOf = PROJECTILE ENVIRONMENT IGNORED_IN_GUI NEUTRALGOLLUM
+            BannerChance = 0%
+            LevelUpChance = 0%
+            LevelUpRadius = 0.0
+            ResourceChance = 100%
+            MinResource = 7000                  ; рандома нет, Min = Max
+            MaxResource = 7000
+            AllowAIPickup = Yes
+            ExecuteFX = FX_GoldChestPickup
+        End
     End
-End
+    ReplaceModule ModuleTag_03                  ; сундук НЕ исчезает
+        Behavior = DeletionUpdate ModuleTag_033
+            MinLifetime = -1
+            MaxLifetime = -1
+        End
+    End
 End
 ; ... (ChildObject WOTR_StartingGold_Player_2..8 по числу слотов)
 
@@ -359,6 +375,34 @@ python tools\calibrate.py
 - **F8** — захватить маркер готовности вокруг курсора → `config/menu_marker.*`;
 - **F9** — зафиксировать текущую точку карты (шаги 1..8);
 - **F10** — выход / отмена.
+
+---
+
+## Пост-бой: защита от преждевременного клика «Пропустить»
+
+После боя экран статистики открывается на «Войсках» с анимацией вкладок.
+Чтобы не ждать ~15с отрисовки, автоматизация жмёт **«Пропустить»** (кнопка
+внизу справа, frac `(0.9109, 0.9583)`). Проблема: пользователь может успеть
+нажать «Пропустить» **до** блокировки ввода, анимация закончится, и наш клик
+в ту же точку попадёт уже по **«Далее»** — мы улетаем на экран «Статистика»,
+а анализировать нужно график.
+
+Решение — **A+B** (`match_result_detector`):
+
+- **A. Ранняя блокировка ввода**: `monitor_poll = 0.25с`, `confirm_streak = 1`
+  (fortress_icon на статистике NCC ~1.0, на лобби ~0.57 при пороге 0.85 —
+  ложных срабатываний нет). Ввод блокируется через ~0.3с вместо 1–1.5с.
+- **B. Сторожевой цикл в `_analyze_score_screen`**: перед каждым шагом и на
+  каждой итерации ожидания кадра проверяется маркер «Статистики»
+  (`_tools/Маркер статистики.jpg`, NCC 0.999 против ≤0.73 на графике). Если мы
+  на «Статистике» — жмём **«Назад»** (frac `(0.0883, 0.9556)`) и возвращаемся
+  на график; график подтверждается по `is_score_screen` (fortress_icon +
+  score_screen_marker) перед анализом. «Пропустить» по-прежнему жмём — так
+  быстрее, а ошибочный переход всегда откатывается.
+
+Кнопки/маркеры настраиваются в `match_result_detector/config.py`:
+`stats_marker_path`, `stats_marker_roi`, `stats_marker_threshold`,
+`back_button_frac`, `monitor_poll`, `confirm_streak`.
 
 ---
 
@@ -534,6 +578,10 @@ python tools\calibrate.py
       повторяется.
 - [x] Определение команды-победителя по экрану статистики: команда «добро»/«зло»
       (`match_result_detector`), остановка сразу после нахождения `victory_coin`.
+- [x] Защита от преждевременного клика «Пропустить» (A+B): ранняя блокировка
+      ввода (`monitor_poll` 0.25с, `confirm_streak` 1) + сторожевой цикл по
+      маркеру «Статистики» (`_tools/Маркер статистики.jpg`) с возвратом «Назад»
+      (frac `(0.0883, 0.9556)`) на график.
 - [x] Закрытие уже запущенной игры перед новым запуском (`launcher.stop_game`).
 - [x] Резервные дополнительные цвета (`additional color_01..03.jpg`) — пока без
       привязки к фракциям.

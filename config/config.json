@@ -7,6 +7,8 @@
   "match_detector": {
     "monitor": true,
     "monitor_timeout": 1500,
+    "monitor_poll": 0.25,
+    "confirm_streak": 1,
     "icon_threshold": 0.60,
     "click_slots": true,
     "click_skip": true,
