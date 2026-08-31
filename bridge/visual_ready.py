@@ -21,6 +21,13 @@
 Чтобы маркер работал на ЛЮБОМ разрешении, хранится его размер в долях окна;
 при проверке маркер автомасштабируется под текущее разрешение.
 
+МАРКЕРЫ-КАРТИНКИ (JPG/PNG):
+  Кроме «квадратного» маркера (calibrate F8) поддерживаются маркеры-картинки —
+  обычные файлы .jpg, вырезанные из скриншота нужного экрана (например
+  _tools/Маркер локальной сети.jpg). Они ищутся НОРМАЛИЗОВАННОЙ
+  кросс-корреляцией (NCC, как в match_result_detector) по всему кадру или в
+  заданной зоне (доли окна), что не требует знать точную позицию элемента.
+
 Требует numpy.
 """
 
@@ -34,6 +41,18 @@ from bridge import navigate as nav
 
 DEFAULT_MATCH = 0.85     # доля совпавших пикселей для признания «готово»
 DEFAULT_TOLERANCE = 30   # допуск по каналу (0..255)
+
+# Разрешение, в котором вырезаны маркеры-картинки (_tools/*.jpg).
+REFERENCE_RESOLUTION = (1920, 1080)
+
+# Зоны поиска маркеров-картинок на кадре (доли окна x0,y0,x1,y1).
+# Маркер «Лок. сеть» снят в ~ (0.059, 0.199) от верхнего левого угла.
+LAN_SCREEN_MARKER_ROI = (0.0, 0.12, 0.14, 0.30)
+# Маркер «Статистика» снят в ~ (0.080, 0.194).
+STATS_SCREEN_MARKER_ROI = (0.02, 0.12, 0.16, 0.30)
+
+# Порог NCC для маркеров-картинок (на своём экране ~0.999, на чужих <=0.73).
+IMAGE_MARKER_THRESHOLD = 0.85
 
 
 def _resize(arr, new_w, new_h):
@@ -91,6 +110,87 @@ def wait_ready(template, meta, match=DEFAULT_MATCH, tolerance=DEFAULT_TOLERANCE,
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if is_ready(template, meta, match, tolerance):
+            return True
+        time.sleep(poll)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Маркеры-картинки (JPG/PNG) — поиск по NCC (как в match_result_detector).
+# ---------------------------------------------------------------------------
+def load_marker_image(path):
+    """Загрузить маркер-картинку (JPG/PNG) как RGB numpy (H, W, 3).
+
+    Использует загрузчик match_result_detector.icon_finder (cv2 или PIL);
+    если оба недоступны — fallback на PIL. Возвращает None, если файла нет
+    или он не читается (тогда код просто ждёт по таймеру).
+    """
+    if not path or not os.path.exists(path):
+        return None
+    finder = _icon_finder()
+    if finder is not None:
+        img = finder.load_png(path)
+        if img is not None:
+            return img
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return np.asarray(im.convert("RGB"), dtype=np.uint8)
+    except Exception:  # noqa: BLE001 - любой сбой загрузки = маркера нет
+        return None
+
+
+def _icon_finder():
+    """match_result_detector.icon_finder (есть numpy-фолбэк) или None."""
+    try:
+        from match_result_detector import icon_finder
+        return icon_finder
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def is_image_marker_visible(template, roi_frac=None,
+                            threshold=IMAGE_MARKER_THRESHOLD):
+    """True, если маркер-картинка найдена на текущем кадре игры.
+
+    Поиск — нормализованная кросс-корреляция (NCC) шаблона по кадру
+    (или по зоне roi_frac, доли окна). Шаблон автомасштабируется под
+    текущее разрешение (маркеры сняты при REFERENCE_RESOLUTION).
+    """
+    frame = nav.capture_window()
+    if frame is None or template is None:
+        return False
+    finder = _icon_finder()
+    if finder is None:
+        return False
+    h, w = frame.shape[:2]
+    ref_w, ref_h = REFERENCE_RESOLUTION
+    scale = min(w / ref_w, h / ref_h)
+    th = max(4, int(round(template.shape[0] * scale)))
+    tw = max(4, int(round(template.shape[1] * scale)))
+    tpl = finder.resize_image(template, tw, th)
+
+    if roi_frac is not None:
+        fx0, fy0, fx1, fy1 = roi_frac
+        x0 = max(0, int(fx0 * w))
+        y0 = max(0, int(fy0 * h))
+        x1 = min(w, int(fx1 * w))
+        y1 = min(h, int(fy1 * h))
+        if x1 - x0 < tw or y1 - y0 < th:
+            return False
+        region = frame[y0:y1, x0:x1]
+    else:
+        region = frame
+    hits = finder.match_template(region, tpl, threshold)
+    return bool(hits)
+
+
+def wait_image_marker(template, roi_frac=None, threshold=IMAGE_MARKER_THRESHOLD,
+                      poll=0.5, timeout=3.0):
+    """Ждать появления маркера-картинки на кадре. True = найден, False = таймаут."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_image_marker_visible(template, roi_frac, threshold):
             return True
         time.sleep(poll)
     return False
