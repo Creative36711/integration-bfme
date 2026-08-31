@@ -6,8 +6,10 @@ BFME2: RotWK integration — AUTO FLOW (entry point).
 комнаты создания игры и выставляет уровень сложности ботам.
 
 Flow:
-    ask setup (фракция, число игроков 2–8, сложность ботов)
+    ask setup (фракция, число игроков 2–8, сложность ботов, новые WOTR-механики)
     -> записать NetworkPref.ini (фракция + авто-цвет игрока)
+    -> генерация __wotr_generated_presets.big (золото/ОК/сигнальный огонь/PP
+       + кольцевая расстановка стартовой армии; боты — случайные значения)
     -> запуск игры (полный экран) -> окно -> главное меню
     -> «Сеть» -> «Лок. сеть» -> «Создать игру» -> комната
     -> выставить сложность слотам ботов (2..N)
@@ -62,6 +64,10 @@ FACTION_CHOICES = [
 ]
 
 DIFFICULTY_NAMES = room.DIFFICULTY_NAMES
+
+# Маркер экрана «Лок. сеть» (картинка из _tools/, рядом с приложением).
+LAN_MARKER_PATH = os.path.join(config.BASE_DIR, "_tools",
+                               "Маркер локальной сети.jpg")
 
 
 def wait_for_window(timeout, poll=0.5):
@@ -337,6 +343,102 @@ def ask_handicaps(total_players):
     return handicaps
 
 
+def _ask_int(prompt, lo, hi, default=None, none_ok=False):
+    """Числовой ответ из [lo..hi]. Пустой ввод = default (или None).
+    none_ok — разрешить ввод '0'/'нет' как None (для сигнального огня)."""
+    while True:
+        s = input(prompt).strip().lower()
+        if s in ("r", "рандом", "random", "случайно"):
+            return "random"
+        if s == "" and default is not None:
+            return default
+        if none_ok and s in ("нет", "no", "н", "0"):
+            return None
+        if s.isdigit() and lo <= int(s) <= hi:
+            return int(s)
+        if not none_ok:
+            log(f"  Введите число от {lo} до {hi}, 'r' (рандом) или Enter для значения {default}.")
+        else:
+            log(f"  Введите число от {lo} до {hi} (Enter = {default}), 'нет'/'0' = нет, 'r' = рандом.")
+
+
+def ask_mechanics():
+    """Опрос новых WOTR-механик — ТОЛЬКО для игрока (слот 1).
+
+    Возвращает dict (или None при 'r' — всё случайно):
+        gold            — бонусные стартовые деньги (0 = без)
+        command_points  — дополнительные командные очки (0 = без)
+        signal_fire     — True/False (сигнальный огонь)
+        start_pp        — стартовые очки палантира 0..10
+        pp_rate         — прирост PP каждые 2 минуты 1..5
+    """
+    log("Новые WOTR-механики (для игрока; у ботов — случайные значения).")
+    log("  В каждом вопросе можно ввести 'r' — случайное значение.")
+    s = input("Задать механики вручную или всё рандомом? (1 = вручную, 2 = всё рандом) > ").strip().lower()
+    if s not in ("1", "вручную", "manual", "да", "y"):
+        return None
+
+    gold = _ask_int("Сколько бонусных стартовых денег у игрока? (0 = без, Enter = 5000) > ", 0, 1000000, default=5000)
+    if gold == "random":
+        return None
+    cp = _ask_int("Сколько дополнительных командных очков у игрока? (0 = без, Enter = 500) > ", 0, 100000, default=500)
+    if cp == "random":
+        return None
+    sf = _ask_int("Есть ли у фракции игрока сигнальный огонь? (1 = да, Enter = 1) > ", 1, 1, default=1, none_ok=True)
+    if sf == "random":
+        return None
+    start_pp = _ask_int("Сколько стартовых PP у игрока? (0–10, Enter = 5) > ", 0, 10, default=5)
+    if start_pp == "random":
+        return None
+    pp_rate = _ask_int("Сколько PP получает игрок каждые 2 минуты? (1–5, Enter = 3) > ", 1, 5, default=3)
+    if pp_rate == "random":
+        return None
+    return {
+        "gold": gold,
+        "command_points": cp,
+        "signal_fire": bool(sf),
+        "start_pp": start_pp,
+        "pp_rate": pp_rate,
+    }
+
+
+def _ensure_lan_screen(lan_marker, menu_marker=None, menu_meta=None,
+                       attempts=3):
+    """Дождаться экрана «Лок. сеть» (верификация маркером-картинкой).
+
+    При холодном старте игра может ещё не принимать инжектируемый ввод: клики
+    «Сеть» -> «Лок. сеть» уходят «в пустоту», и мы остаёмся в главном меню.
+    Если маркер LAN не найден за lan_marker_timeout:
+      * главное меню подтверждено маркером (или menu_marker не задан) — считаем,
+        что клики ушли в пустоту, и ПОВТОРЯЕМ навигацию;
+      * главное меню НЕ подтверждено — экран LAN просто ещё грузится, ждём ещё
+        одну порцию и проверяем маркер снова.
+
+    Возвращает True, если экран «Лок. сеть» подтверждён маркером.
+    """
+    for attempt in range(1, attempts + 1):
+        if visual_ready.wait_image_marker(
+                lan_marker, roi_frac=visual_ready.LAN_SCREEN_MARKER_ROI,
+                poll=T["lan_marker_poll"], timeout=T["lan_marker_timeout"]):
+            return True
+        if attempt >= attempts:
+            break
+        on_main_menu = True
+        if menu_marker is not None:
+            on_main_menu = visual_ready.is_ready(menu_marker, menu_meta)
+        if on_main_menu:
+            log(f"[lan] маркер LAN не найден за {T['lan_marker_timeout']:.0f}с — "
+                f"клики ушли в пустоту (холодный старт), повторяю "
+                f"«Сеть»->«Лок. сеть» (попытка {attempt + 1}/{attempts})")
+            if not menu.goto_lan():
+                return False
+        else:
+            log(f"[lan] маркер LAN не найден, главное меню не подтверждено — "
+                f"экран ещё грузится, проверяю снова (попытка "
+                f"{attempt + 1}/{attempts})")
+    return False
+
+
 def write_match_result(result):
     """Записать итог матча в config/match_result.json."""
     out = os.path.join(config.CONFIG_DIR, "match_result.json")
@@ -484,6 +586,7 @@ def main(argv=None):
                 + (f" [{', '.join(spawn._short(a) for a in sq['upgrades'])}]"
                    if sq['upgrades'] else ""))
     heroes, ring_heroes = ask_heroes(faction)
+    mechanics = ask_mechanics()
     handicaps = ask_handicaps(total_players)
     color_name = network_prefs.FACTION_COLORS.get(faction)
     map_info = map_data
@@ -515,6 +618,13 @@ def main(argv=None):
         log(f"[setup] герой: {h['hero']} ур.{h['level']}")
     for r in ring_heroes:
         log(f"[setup] кольцевой герой: {r}")
+    if mechanics:
+        log(f"[setup] механики игрока: золото={mechanics['gold']}  "
+            f"ОК={mechanics['command_points']}  "
+            f"сигн.огонь={'да' if mechanics['signal_fire'] else 'нет'}  "
+            f"старт.PP={mechanics['start_pp']}  PP/2мин={mechanics['pp_rate']}")
+    else:
+        log("[setup] механики игрока: случайные (боты — тоже случайные)")
     for slot in sorted(handicaps):
         log(f"[setup] фора слота {slot}: {handicaps[slot]}%")
 
@@ -549,21 +659,22 @@ def main(argv=None):
         if settings:
             network_prefs.apply_settings(settings)
 
-        # 0b. сгенерировать спавн-патч стартовой армии (до запуска).
-        spawn_path = cfg.get("spawn_big", r"C:\RotWK\wotr_generated_presets.big")
+        # 0b. сгенерировать спавн-патч «WOTR Generated Presets» (до запуска):
+        #     новые механики (золото/ОК/огонь/PP) + стартовая армия.
+        #     Файл создаётся ВСЕГДА: механики есть у каждого участника
+        #     (у игрока — из опроса, у ботов — случайные).
+        spawn_path = cfg.get("spawn_big", spawn.SPAWN_BIG_DEFAULT)
         # factions_by_slot: слот 0 = игрок, слоты 2..N = боты.
         factions_by_slot = {0: faction, **bot_factions}
-        if army or heroes or ring_heroes or bot_factions:
-            ok, info = spawn.generate_spawn_big(
-                spawn_path, factions_by_slot, army,
-                player_heroes=heroes, ring_heroes=ring_heroes)
-            if ok:
-                log(f"[spawn] спавн-патч создан: {spawn_path}")
-            else:
-                log(f"[spawn] ОШИБКА генерации: {info}", file=sys.stderr)
-                return 1
+        ok, info = spawn.generate_spawn_big(
+            spawn_path, factions_by_slot, army,
+            player_heroes=heroes, ring_heroes=ring_heroes,
+            player_mechanics=mechanics)
+        if ok:
+            log(f"[spawn] спавн-патч создан: {spawn_path}")
         else:
-            log("[spawn] армия пустая — спавн-патч не создаётся")
+            log(f"[spawn] ОШИБКА генерации: {info}", file=sys.stderr)
+            return 1
 
         # 1. find & launch
         exe = launcher.discover_exe(args.exe or cfg.get("exe_path"))
@@ -624,6 +735,24 @@ def main(argv=None):
         log("[nav] Сеть -> Лок. сеть")
         if not menu.goto_lan():
             return 1
+
+        # 4b. ВЕРИФИКАЦИЯ: мы должны оказаться на экране «Лок. сеть».
+        #     При холодном старте клики могут уйти «в пустоту» (игра ещё не
+        #     принимала ввод) — тогда мы всё ещё в главном меню. Проверяем по
+        #     маркеру-картинке; если маркер не найден за пару секунд —
+        #     повторяем «Сеть»->«Лок. сеть» и сверяемся снова.
+        lan_marker = visual_ready.load_marker_image(LAN_MARKER_PATH)
+        if lan_marker is not None:
+            if _ensure_lan_screen(lan_marker, marker, marker_meta):
+                log("[lan] экран «Лок. сеть» подтверждён маркером")
+            else:
+                log("ERROR: маркер «Лок. сеть» не найден — экран не загрузился "
+                    "(клики не попали по кнопкам)", file=sys.stderr)
+                return 1
+        else:
+            log(f"[lan] маркер «Лок. сеть» не задан ({LAN_MARKER_PATH}) — "
+                f"жду по таймеру {T['lobby_load']:.0f}с")
+            time.sleep(T["lobby_load"])
 
         if args.stop_at == "lan":
             log("[done] reached LAN screen")

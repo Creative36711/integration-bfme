@@ -1,6 +1,7 @@
 {
   "exe_path": "C:\\RotWK\\lotrbfme2ep1.exe",
   "args": [],
+  "spawn_big": "C:\\RotWK\\__wotr_generated_presets.big",
   "lock_input": true,
   "network_rules": "0 0 0 400 1000 -1 -1 -1 -1 -1",
   "match_detector": {

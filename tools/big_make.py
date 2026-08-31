@@ -8,7 +8,7 @@
 
 Запуск:
     python tools\\big_make.py --unit GondorArcherHorde
-    python tools\\big_make.py --unit GondorFighterHorde --out C:\\RotWK\\wotr_generated_presets.big
+    python tools\\big_make.py --unit GondorFighterHorde --out C:\\RotWK\\__wotr_generated_presets.big
 """
 
 import argparse
@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bridge import spawn as _spawn
 
-DEFAULT_BIG = r"C:\RotWK\wotr_generated_presets.big"
-INTERNAL_PATH = r"data\ini\object\system\systemwotr_spawn.ini"
+DEFAULT_BIG = _spawn.SPAWN_BIG_DEFAULT
+INTERNAL_PATH = _spawn.SPAWN_INTERNAL_PATH
 OBJECT_NAME = "WOTRTemporaryVictoryAnchor"
 MODULE_TAG = "ModuleTag_SpawnHorde"
 FOURCC = b"BIGF"

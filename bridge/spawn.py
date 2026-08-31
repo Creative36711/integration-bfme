@@ -60,7 +60,23 @@ FACTION_UPGRADES = {
     "mordor":   "Upgrade_MordorFaction",
     "goblins":  "Upgrade_WildFaction",
     "angmar":   "Upgrade_AngmarFaction",
+    "arnor":    "Upgrade_ArnorFaction",
 }
+
+# ---------------------------------------------------------------------------
+# WOTR Generated Presets — новые механики (золото / ОК / сигнальный огонь / PP).
+# ---------------------------------------------------------------------------
+# Имя выходного файла и путь внутри .big (новый формат):
+#   __wotr_generated_presets.big  ->  data\ini\object\zzz_wotr\system\zzz_spawn.ini
+SPAWN_BIG_DEFAULT = r"C:\RotWK\__wotr_generated_presets.big"
+SPAWN_INTERNAL_PATH = r"data\ini\object\zzz_wotr\system\zzz_spawn.ini"
+
+# Диапазоны случайных значений (для ботов и режима «r» в опросе).
+MECH_GOLD_RANGE = (500, 10000)    # бонусные стартовые деньги
+MECH_CP_RANGE = (100, 1000)       # дополнительные командные очки
+MECH_START_PP_RANGE = (0, 10)     # стартовые очки палантира
+MECH_PP_RATE_RANGE = (1, 5)       # PP каждые 2 минуты
+SIGNAL_FIRE_CHANCE = 0.5          # шанс «Да» для сигнального огня
 
 # Уровень по умолчанию для обычных и героических отрядов.
 CAP_NONE = 0       # без уровня (осадные орудия, энты и т.п.) — аура уровня не спавнится
@@ -351,6 +367,25 @@ def random_hero_names(faction):
     return [h for h in heroes_for(faction) if random.random() < 0.5]
 
 
+def random_mechanics():
+    """Случайные значения новых WOTR-механик (золото / ОК / огонь / PP).
+
+    Возвращает dict:
+        gold            — бонусные стартовые деньги (int)
+        command_points  — дополнительные командные очки (int)
+        signal_fire     — True/False (сигнальный огонь)
+        start_pp        — стартовые очки палантира 0..10 (int)
+        pp_rate         — прирост PP каждые 2 минуты 1..5 (int)
+    """
+    return {
+        "gold": random.randint(*MECH_GOLD_RANGE),
+        "command_points": random.randint(*MECH_CP_RANGE),
+        "signal_fire": random.random() < SIGNAL_FIRE_CHANCE,
+        "start_pp": random.randint(*MECH_START_PP_RANGE),
+        "pp_rate": random.randint(*MECH_PP_RATE_RANGE),
+    }
+
+
 def _short(aura):
     return aura.replace("WOTR_Aura_", "").replace("WOTR_Grant_", "")
 
@@ -448,20 +483,135 @@ def distribute_units(units):
 # ---------------------------------------------------------------------------
 # Сборка ini и .big
 # ---------------------------------------------------------------------------
+# Базовый объект золота — генерируется ОДИН раз; дочерние объекты
+# (WOTR_StartingGold_Player_N) переопределяют суммы через ReplaceModule.
+GOLD_BASE_OBJECT = """\
+Object WOTR_StartingGold
+
+    Draw = W3DScriptedModelDraw ModuleTag_01
+        DefaultModelConditionState
+            Model = PchestTreasure
+            ParticleSysBone NONE GoldChestGlimmer
+            ParticleSysBone NONE GoldChestGlimmer02
+            ParticleSysBone NONE GoldChestRedGlimmer
+            ParticleSysBone NONE GoldChestGreenGlimmer
+            ParticleSysBone NONE GoldChestAura
+        End
+    End
+
+    EditorSorting   = MISC_MAN_MADE
+    DisplayName     = OBJECT:TreasureChest
+    Side            = Civilian
+
+    KindOf = SELECTABLE PARACHUTABLE IMMOBILE NOT_AUTOACQUIRABLE UNATTACKABLE CRATE
+
+    ThreatLevel = 0.0
+
+    Body = HighlanderBody ModuleTag_04
+        MaxHealth = 1.0
+    End
+
+    Behavior = SalvageCrateCollide ModuleTag_02
+        ForbiddenKindOf  = PROJECTILE ENVIRONMENT IGNORED_IN_GUI NEUTRALGOLLUM
+        BannerChance     = 0%
+        LevelUpChance    = 0%
+        LevelUpRadius    = 0.0
+        ResourceChance   = 100%
+        MinResource      = 0
+        MaxResource      = 0
+        AllowAIPickup    = Yes
+        ExecuteFX        = FX_GoldChestPickup
+    End
+
+    Geometry            = BOX
+    GeometryMajorRadius = 12.0
+    GeometryMinorRadius = 12.0
+    GeometryHeight      = 12.0
+    GeometryIsSmall     = Yes
+    Shadow              = SHADOW_VOLUME
+
+End
+"""
+
+
+def build_gold_base():
+    """Базовый объект WOTR_StartingGold (полный код, генерируется один раз)."""
+    return GOLD_BASE_OBJECT + "\n"
+
+
+def build_gold_child(slot, amount):
+    """ChildObject WOTR_StartingGold_Player_N — суммы золота для конкретного
+    игрока. Переопределяет SalvageCrateCollide (ModuleTag_02) базового объекта
+    через ReplaceModule: MinResource = MaxResource = amount (рандома нет)."""
+    return "\n".join([
+        f"ChildObject WOTR_StartingGold_Player_{slot} WOTR_StartingGold",
+        "",
+        "ReplaceModule ModuleTag_02",
+        "",
+        "    Behavior = SalvageCrateCollide ModuleTag_022",
+        "",
+        "        ResourceChance = 100%",
+        f"        MinResource    = {amount}   ; рандома нет, Min = Max",
+        f"        MaxResource    = {amount}",
+        "        AllowAIPickup  = Yes",
+        "    End",
+        "",
+        "End",
+        "",
+        "End",
+        "",
+    ])
+
+
+def build_command_point_child(slot, cp):
+    """ChildObject WOTR_CommandPointBonus_Player_N — доп. командные очки."""
+    return "\n".join([
+        f"ChildObject WOTR_CommandPointBonus_Player_{slot} WOTR_CommandPointBonus",
+        f"    CommandPointBonus = {cp}",
+        "End",
+        "",
+    ])
+
+
+def _spawn_module(tag, trigger, thing, x=0, y=0, indent=0):
+    """AddModule-блок ObjectCreationUpgrade (спавн в якоре).
+
+    indent — отступ в пробелах (4 = внутри Object WOTRTemporaryVictoryAnchor).
+    """
+    pad = " " * indent
+    return "\n".join([
+        f"{pad}AddModule",
+        f"{pad}    Behavior = ObjectCreationUpgrade {tag}",
+        f"{pad}        TriggeredBy  = {trigger}",
+        f"{pad}        ThingToSpawn = {thing}",
+        f"{pad}        Offset       = X:{x} Y:{y} Z:0",
+        f"{pad}    End",
+        f"{pad}End",
+    ])
+
+
+def _module_lines(e):
+    """AddModule-блок для записи из словаря (для тегов U*/R*/H*/B* и т.п.)."""
+    x, y = e.get("x", 0), e.get("y", 0)
+    lines = [
+        "    AddModule",
+        f"        Behavior = ObjectCreationUpgrade {e['tag']}",
+        f"            TriggeredBy  = {e['trigger']}",
+        f"            ThingToSpawn = {e['unit']}",
+        f"            Offset       = X:{x} Y:{y} Z:0",
+    ]
+    if "angle" in e and e["angle"] is not None:
+        lines.append(f"            Angle        = {e['angle']}")
+    lines += ["        End", "    End"]
+    return lines
+
+
 def build_ini(entries):
     """; starting armies + auras (generated by bridge/spawn.py)"""
     lines = ["; starting armies + auras (generated by bridge/spawn.py)",
              f"Object {OBJECT_NAME}"]
     for e in entries:
-        lines.append("    AddModule")
-        lines.append(f"        Behavior = ObjectCreationUpgrade {e['tag']}")
-        lines.append(f"            TriggeredBy  = {e['trigger']}")
-        lines.append(f"            ThingToSpawn = {e['unit']}")
-        lines.append(f"            Offset       = X:{e['x']} Y:{e['y']} Z:0")
-        if "angle" in e and e["angle"] is not None:
-            lines.append(f"            Angle        = {e['angle']}")
-        lines.append("        End")
-        lines.append("    End")
+        lines.extend(_module_lines(e))
     lines.append("End")
     lines.append("")
     return "\n".join(lines)
@@ -514,28 +664,47 @@ def build_big(fourcc, files):
 
 def generate_spawn_big(out_path, factions_by_slot, player_squads,
                        player_heroes=None, ring_heroes=None,
+                       player_mechanics=None,
                        gate_angle_deg=None,
-                       internal_path=r"data\ini\object\system\systemwotr_spawn.ini",
+                       internal_path=SPAWN_INTERNAL_PATH,
                        fourcc=b"BIGF"):
-    """Сгенерировать .big-патч спавна (кольцевая расстановка).
+    """Сгенерировать .big-патч спавна «WOTR Generated Presets».
 
-    factions_by_slot — {slot: faction_key}, слот 0 = игрок, 2..N = боты.
-    player_squads — список отрядов игрока:
-        [{"unit": ..., "level": N, "upgrades": [aura...]}, ...]
-    player_heroes — список героев игрока: [{"hero": ..., "level": N}, ...]
-    ring_heroes  — список кольцевых героев (без уровня/апгрейдов).
-    gate_angle_deg — направление ворот (геом. угол); None = авто по фракции.
+    Выходной файл: __wotr_generated_presets.big (по умолчанию), внутри:
+      data\\ini\\object\\zzz_wotr\\system\\zzz_spawn.ini
 
-    Расстановка:
-      Юниты — кольцами (distribute_units), до 8 на кольцо.
-      Герои — линией у ворот (hero_positions).
-      Кольцевой герой — на дальнем кольце (RING_HERO_RADIUS).
+    Содержимое (порядок как в ТЗ):
+      1. Object WOTR_StartingGold — базовый объект золота (один раз, полный
+         код) + ChildObject WOTR_StartingGold_Player_N с ReplaceModule
+         (Min = Max = значение);
+      2. ChildObject WOTR_CommandPointBonus_Player_N — доп. командные очки;
+      3. Object WOTRTemporaryVictoryAnchor — якорь, который спавнит:
+           - золото (модули ModuleTag_Gold_N, Offset 0:0:0);
+           - командные очки (ModuleTag_CP_N, Offset 0:0:0);
+           - сигнальный огонь (ModuleTag_SignalFire_N, за картой 9999:9999)
+             — только если signal_fire = True;
+           - стартовые PP (ModuleTag_StartPP_N → WOTR_StartPP_<N>);
+           - прирост PP (ModuleTag_PPRate_N → WOTR_PPRate_<N>);
+           - стартовую армию (кольцевая расстановка) — «всё остальное».
 
-    Для каждого юнита спавнятся: сам юнит (с Angle) + ауры + аура уровня
-    (ауры — тот же Offset, без Angle).
-    Для героя: спавн + Object-блок модификации.
-    Боты — случайный состав своей фракции (без героев).
+    Аргументы:
+      factions_by_slot — {slot: faction_key}, слот 0 = игрок, 2..N = боты.
+      player_squads — отряды игрока: [{"unit":..., "level":N,
+                       "upgrades":[aura...]}, ...] (может быть пустым).
+      player_heroes — герои игрока: [{"hero":..., "level":N}, ...].
+      ring_heroes  — кольцевые герои (без уровня/апгрейдов).
+      player_mechanics — значения новых механик для игрока (слот 1):
+          {"gold": int, "command_points": int, "signal_fire": bool,
+           "start_pp": int, "pp_rate": int}
+          None = случайные (random_mechanics()).
+      gate_angle_deg — направление ворот; None = авто по фракции.
+
+    Боты получают случайные значения всех механик (random_mechanics()) и
+    случайный состав войск — как и раньше.
+
+    Возвращает (True, ini_text) или (False, [ошибки]).
     """
+    # --- Армия (кольцевая расстановка, как раньше) ---
     entries = []
     hero_mods = []
     tag_i = 0
@@ -590,7 +759,6 @@ def generate_spawn_big(out_path, factions_by_slot, player_squads,
     # --- Игрок: кольцевые герои (дальнее кольцо) ---
     rings_list = ring_heroes or []
     if rings_list:
-        gate_rad = math.radians(gate)
         for i, r in enumerate(rings_list):
             step = 360.0 / max(len(rings_list), 1)
             alpha = gate + i * step
@@ -626,11 +794,82 @@ def generate_spawn_big(out_path, factions_by_slot, player_squads,
                     hero_mods.append(build_hero_mod(bname, num,
                                                     random.randint(1, 10)))
 
-    ini_text = build_ini(entries)
-    if hero_mods:
-        ini_text += "\n" + "\n".join(hero_mods)
+    # --- Новые механики (золото / ОК / огонь / PP) по слотам ---
+    # Игрок (слот 1) — из опроса (или рандом), боты — всегда рандом.
+    mech = {}
+    for slot, fac in sorted(factions_by_slot.items()):
+        if slot == 0:
+            # слот 0 в словаре = игрок; в файле он слот 1
+            mech[1] = dict(player_mechanics) if player_mechanics \
+                else random_mechanics()
+        else:
+            mech[slot] = random_mechanics()
 
-    ini = ini_text.encode("latin-1")
+    # --- Сборка ini ---
+    header = "\n".join([
+        "; ============================================================",
+        "; WOTR Generated Presets",
+        f"; Путь: {SPAWN_INTERNAL_PATH}",
+        "; ВНИМАНИЕ: файл генерируется автоматически, не редактировать",
+        "; ============================================================",
+        "",
+    ])
+
+    # 1. Стартовое золото: базовый объект (один раз) + дочерние по слотам
+    ini_text = header
+    ini_text += ("; --- Стартовое золото: базовый объект + дочерние "
+                 "(все игроки) ---\n")
+    ini_text += build_gold_base()
+    for slot in sorted(mech):
+        ini_text += build_gold_child(slot, mech[slot]["gold"])
+    ini_text += "\n"
+
+    # 2. Командные очки (все игроки)
+    ini_text += "; --- Командные очки (все игроки) ---\n"
+    for slot in sorted(mech):
+        ini_text += build_command_point_child(slot, mech[slot]["command_points"])
+    ini_text += "\n"
+
+    # 3. Якорь (спавн всего)
+    ini_text += f"; --- Якорь (спавн всего) ---\nObject {OBJECT_NAME}\n\n"
+    for slot in sorted(mech):
+        m = mech[slot]
+        trig_slot = upgrade_for(factions_by_slot.get(0 if slot == 1 else slot))
+        ini_text += f"    ; Золото (слот {slot})\n"
+        ini_text += _spawn_module(f"ModuleTag_Gold_{slot}", trig_slot,
+                                  f"WOTR_StartingGold_Player_{slot}", indent=4)
+        ini_text += "\n\n"
+        ini_text += f"    ; Командные очки (слот {slot})\n"
+        ini_text += _spawn_module(f"ModuleTag_CP_{slot}", trig_slot,
+                                  f"WOTR_CommandPointBonus_Player_{slot}", indent=4)
+        ini_text += "\n\n"
+        if m["signal_fire"]:
+            ini_text += f"    ; Сигнальный огонь (слот {slot}) — за пределами карты\n"
+            ini_text += _spawn_module(f"ModuleTag_SignalFire_{slot}", trig_slot,
+                                      "SignalFire", x=9999, y=9999, indent=4)
+            ini_text += "\n\n"
+        ini_text += f"    ; Стартовые PP (слот {slot})\n"
+        ini_text += _spawn_module(f"ModuleTag_StartPP_{slot}", trig_slot,
+                                  f"WOTR_StartPP_{m['start_pp']}", indent=4)
+        ini_text += "\n\n"
+        ini_text += f"    ; Прирост PP каждые 2 минуты (слот {slot})\n"
+        ini_text += _spawn_module(f"ModuleTag_PPRate_{slot}", trig_slot,
+                                  f"WOTR_PPRate_{m['pp_rate']}", indent=4)
+        ini_text += "\n\n"
+
+    # 4. Стартовая армия (кольцевая расстановка) — «всё остальное»
+    ini_text += "    ; --- Стартовая армия (кольцевая расстановка) ---\n"
+    for e in entries:
+        ini_text += "\n".join(_module_lines(e)) + "\n"
+    ini_text += "End\n"
+    ini_text += "\n"
+
+    if hero_mods:
+        ini_text += "\n".join(hero_mods)
+
+    # cp1251: для чистого ASCII байты идентичны latin-1, но позволяет
+    # писать русские комментарии в шапке файла (см. WOTR Generated Presets).
+    ini = ini_text.encode("cp1251", errors="replace")
     big = build_big(fourcc, [(internal_path, ini)])
 
     parent = os.path.dirname(os.path.abspath(out_path))

@@ -70,14 +70,18 @@ python tools\calibrate.py
 ## Полный поток (что делает `main.py`)
 
 ```
-опрос (сложность → игроки → фракция → фракции ботов → карта → роль игрока (защита/атака) → расстановка позиций → армия → герои → фора)
+опрос (сложность → игроки → фракция → фракции ботов → карта → роль игрока (защита/атака) → расстановка позиций → армия → герои → WOTR-механики → фора)
   → запись NetworkPref.ini (фракция + авто-цвет игрока + правила)
-  → генерация wotr_generated_presets.big (спавн-патч стартовой армии)
+  → генерация __wotr_generated_presets.big (WOTR-механики + спавн-патч стартовой армии)
   → запуск игры (полный экран)
   → ждать окно game.dat
   → ждать готовность главного меню (визуальный маркер)
     → ЕСЛИ маркер не найден за menu_timeout (60с) → ОШИБКА (вероятно краш)
-  → «Сеть» → «Лок. сеть» → «Создать игру»
+  → «Сеть» → «Лок. сеть»
+    → верификация экрана «Лок. сеть» маркером-картинкой (_tools/Маркер локальной сети.jpg)
+    → ЕСЛИ маркер не найден за ~2.5с → клики ушли «в пустоту» (холодный старт),
+      повторяем «Сеть» → «Лок. сеть» и сверяемся снова
+  → «Создать игру»
   → комната: сложность → фракции → союзы → цвета → фора
   → назначить стартовые позиции на карте (оборона / атака)
   → «Начать игру» → 5-сек отсчёт (ввод заблокирован) → бой
@@ -165,9 +169,126 @@ End
 
 ### Выходной файл
 
-`wotr_generated_presets.big` — SAGE-архив (BIGF), содержащий один файл:
-`data\ini\object\system\systemwotr_spawn.ini`. Путь настраивается через
-`config.json` → `spawn_big`.
+`__wotr_generated_presets.big` — SAGE-архив (BIGF), содержащий один файл:
+`data\ini\object\zzz_wotr\system\zzz_spawn.ini`. Путь настраивается через
+`config.json` → `spawn_big` (по умолчанию — `C:\RotWK\__wotr_generated_presets.big`).
+
+> **Внимание:** имя файла и внутренний путь изменились (WOTR Generated Presets):
+> было `wotr_generated_presets.big` + `data\ini\object\system\systemwotr_spawn.ini`,
+> стало `__wotr_generated_presets.big` + `data\ini\object\zzz_wotr\system\zzz_spawn.ini`.
+
+### WOTR Generated Presets — новые механики
+
+Помимо стартовой армии, файл теперь несёт **новые WOTR-механики**, которые
+тоже спавнятся через якорь `WOTRTemporaryVictoryAnchor` (объекты
+`WOTR_StartingGold_Player_N`, `WOTR_CommandPointBonus_Player_N`, `SignalFire`,
+`WOTR_StartPP_N`, `WOTR_PPRate_N`).
+
+**Порядок объектов в файле:**
+1. `WOTR_StartingGold_Player_N` — золото (выше всех);
+2. `WOTR_CommandPointBonus_Player_N` — командные очки;
+3. `WOTRTemporaryVictoryAnchor` — якорь (спавнит всё остальное).
+
+**Опрос (как и раньше, интерактивный):**
+- Вопросы задаются **только игроку** (слот 1); у ботов значения всегда
+  **случайные** (для быстрого тестирования).
+- В каждом вопросе можно ввести `r` — случайное значение (все оставшиеся
+  механики тоже станут случайными).
+- Сначала спрашивается: «Задать механики вручную или всё рандомом?» —
+  `2` = всё рандом.
+
+**Вопросы игроку (слот 1):**
+
+| # | Вопрос | Результат в файле |
+|---|---|---|
+| 1 | Сколько бонусных стартовых денег у игрока? (0 = без, Enter = 5000) | Базовый `Object WOTR_StartingGold` (полный код, один раз) + `ChildObject WOTR_StartingGold_Player_1` с `ReplaceModule` (`MinResource = MaxResource = <ответ>`, рандома нет) + модуль `ModuleTag_Gold_1` в якоре |
+| 2 | Сколько дополнительных командных очков у игрока? (0 = без, Enter = 500) | `ChildObject WOTR_CommandPointBonus_Player_1 WOTR_CommandPointBonus` → `CommandPointBonus = <ответ>` + модуль `ModuleTag_CP_1` |
+| 3 | Есть ли у фракции игрока сигнальный огонь? (`1` = да, Enter = да, `нет`/`0` = нет) | При «да»: модуль `ModuleTag_SignalFire_1` → `ThingToSpawn = SignalFire`, `Offset = X:9999 Y:9999 Z:0` (за картой — невидим, бонус работает). При «нет» блок не генерируется |
+| 4 | Сколько стартовых PP у игрока? (0–10, Enter = 5) | Модуль `ModuleTag_StartPP_1` → `ThingToSpawn = WOTR_StartPP_<ответ>` |
+| 5 | Сколько PP получает игрок каждые 2 минуты? (1–5, Enter = 3) | Модуль `ModuleTag_PPRate_1` → `ThingToSpawn = WOTR_PPRate_<ответ>` |
+
+**Структура генерируемого файла (схема):**
+
+```ini
+; ============================================================
+; WOTR Generated Presets
+; Путь: data\ini\object\zzz_wotr\system\zzz_spawn.ini
+; ВНИМАНИЕ: файл генерируется автоматически, не редактировать
+; ============================================================
+
+; --- Стартовое золото: базовый объект + дочерние (все игроки) ---
+Object WOTR_StartingGold                       ; полный код базового объекта
+    Draw = W3DScriptedModelDraw ModuleTag_01
+        DefaultModelConditionState
+            Model = PchestTreasure
+            ; ... партиклы GoldChest* ...
+        End
+    End
+    Behavior = SalvageCrateCollide ModuleTag_02
+        ResourceChance = 100%
+        MinResource    = 0
+        MaxResource    = 0
+        AllowAIPickup  = Yes
+        ExecuteFX      = FX_GoldChestPickup
+    End
+    ; ...
+End
+
+ChildObject WOTR_StartingGold_Player_1 WOTR_StartingGold
+ReplaceModule ModuleTag_02
+    Behavior = SalvageCrateCollide ModuleTag_022
+        ResourceChance = 100%
+        MinResource    = 7000   ; рандома нет, Min = Max
+        MaxResource    = 7000
+        AllowAIPickup  = Yes
+    End
+End
+End
+; ... (ChildObject WOTR_StartingGold_Player_2..8 по числу слотов)
+
+; --- Командные очки (все игроки) ---
+ChildObject WOTR_CommandPointBonus_Player_1 WOTR_CommandPointBonus
+    CommandPointBonus = 800
+End
+; ...
+
+; --- Якорь (спавн всего) ---
+Object WOTRTemporaryVictoryAnchor
+    ; Золото / ОК / огонь / старт. PP / прирост PP — на каждый слот
+    AddModule
+        Behavior = ObjectCreationUpgrade ModuleTag_Gold_1
+            TriggeredBy  = Upgrade_MenFaction
+            ThingToSpawn = WOTR_StartingGold_Player_1
+            Offset       = X:0 Y:0 Z:0
+        End
+    End
+    ; ... ModuleTag_CP_N / ModuleTag_SignalFire_N (X:9999 Y:9999 Z:0) /
+    ;     ModuleTag_StartPP_N (WOTR_StartPP_<N>) / ModuleTag_PPRate_N ...
+
+    ; --- Стартовая армия (кольцевая расстановка) — «всё остальное» ---
+    AddModule ... End
+End
+```
+
+**Маппинг фракций → апгрейды (TriggeredBy):**
+
+| Фракция | TriggeredBy |
+|---|---|
+| Men | `Upgrade_MenFaction` |
+| Elves | `Upgrade_ElfFaction` |
+| Dwarves | `Upgrade_DwarfFaction` |
+| Isengard | `Upgrade_IsengardFaction` |
+| Mordor | `Upgrade_MordorFaction` |
+| Wild (Гоблины) | `Upgrade_WildFaction` |
+| Angmar | `Upgrade_AngmarFaction` |
+| Arnor | `Upgrade_ArnorFaction` |
+
+Диапазоны случайных значений (боты / режим `r`): золото 500–10000,
+ОК 100–1000, старт. PP 0–10, прирост PP 1–5, сигнальный огонь — 50/50
+(константы `MECH_*_RANGE`, `SIGNAL_FIRE_CHANCE` в `bridge/spawn.py`).
+
+Стартовая армия (кольцевая расстановка юнитов/героев/аур) остаётся в том же
+файле — её модули добавляются в якорь после модулей механик.
 
 ---
 
@@ -186,6 +307,28 @@ End
 2. Дождись главного меню игры.
 3. Alt-Tab в игру, наведи курсор на треугольник над кнопкой «Сеть» → **F8**.
 4. Сохранится `config/menu_marker.npy` + `config/menu_marker.json`.
+
+### Маркеры-картинки (JPG) — верификация экранов
+
+Кроме «квадратного» маркера из калибратора поддерживаются **маркеры-картинки**:
+обычные .jpg-вырезки нужного элемента экрана (лежат в `_tools/` рядом с
+приложением). Они ищутся **нормализованной кросс-корреляцией (NCC)** по кадру
+(или по зоне в долях окна) и автомасштабируются под текущее разрешение —
+точную позицию элемента знать не нужно.
+
+- `_tools/Маркер локальной сети.jpg` — маркер экрана «Лок. сеть». Используется
+  в `main.py` сразу после клика «Лок. сеть»: если маркер найден за
+  `lan_marker_timeout` (~2.5с) — идём дальше; если нет — клики ушли «в
+  пустоту» (холодный старт, игра ещё не принимала ввод), навигация
+  «Сеть» → «Лок. сеть» повторяется и проверяется снова. Если главное меню при
+  этом НЕ подтверждено маркером меню — просто ждём ещё (экран грузится).
+- `_tools/Маркер статистики.jpg` — маркер экрана «Статистика» (для пост-боевого
+  анализа; см. `match_result_detector`).
+
+Зоны поиска — `LAN_SCREEN_MARKER_ROI` / `STATS_SCREEN_MARKER_ROI` в
+`bridge/visual_ready.py`, порог `IMAGE_MARKER_THRESHOLD = 0.85` (на своём экране
+маркер даёт NCC ~0.999, на чужих ≤0.73). Функции: `load_marker_image`,
+`is_image_marker_visible`, `wait_image_marker`.
 
 ---
 
@@ -374,7 +517,21 @@ python tools\calibrate.py
 - [x] Кольцевая расстановка войск (`spawn.py`): юниты по кольцам, герои у ворот,
       поддержка `Angle`, адаптивное заполнение, шахматка.
 - [x] Полный ростер: 73 юнита, 7 фракций, 11 без уровня (`CAP_NONE`).
-- [x] Спавн-патч `wotr_generated_presets.big`.
+- [x] Спавн-патч `__wotr_generated_presets.big` (новый путь внутри:
+      `data\ini\object\zzz_wotr\system\zzz_spawn.ini`).
+- [x] Новые WOTR-механики (`spawn.py` + опрос в `main.py`): стартовое золото
+      (базовый `Object WOTR_StartingGold` + `ChildObject WOTR_StartingGold_Player_N`
+      с `ReplaceModule`: Min = Max = значение), командные очки
+      (`WOTR_CommandPointBonus_Player_N`), сигнальный огонь (`SignalFire`,
+      спавн за картой X:9999 Y:9999), стартовые PP (`WOTR_StartPP_N`) и прирост
+      PP каждые 2 минуты (`WOTR_PPRate_N`). Вопросы — только игроку
+      (вариант `r` = рандом), боты — случайные значения.
+- [x] Маппинг фракций → апгрейды `Upgrade_<Faction>Faction` (включая Arnor).
+- [x] Маркеры-картинки (JPG) в `visual_ready.py`: NCC-поиск по кадру, зона в
+      долях окна, автомасштаб под разрешение. Верификация экрана «Лок. сеть»
+      после клика (`_tools/Маркер локальной сети.jpg`): если маркер не найден
+      за ~2.5с — клики ушли «в пустоту» (холодный старт), навигация
+      повторяется.
 - [x] Определение команды-победителя по экрану статистики: команда «добро»/«зло»
       (`match_result_detector`), остановка сразу после нахождения `victory_coin`.
 - [x] Закрытие уже запущенной игры перед новым запуском (`launcher.stop_game`).
