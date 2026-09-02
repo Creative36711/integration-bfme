@@ -14,6 +14,9 @@
     (было:  MapCache c_3A_5Cusers_5C..._5Cmaps_5C<map>_5C<map>_2Emap
      стало: MapCache maps_5C<map>_5C<map>_2Emap)
   * isOfficial = no  ->  isOfficial = yes
+  * displayName: байт '$' (0x24) в исходнике экранирован как '*24*',
+    но движок SAGE понимает только '_XX_'-экранирование; нормализуем
+    любые '*XX*' -> '_XX_', иначе имя карты в игре не отображается
   * всё остальное (CRC, таймстемпы, InitialCameraPosition, стартовые
     позиции и т.д.) — без изменений.
 
@@ -60,16 +63,47 @@ def parse_blocks(text):
     return blocks
 
 
+_STAR_ESCAPE = re.compile(r"\*([0-9A-Fa-f]{2})\*")
+
+
+def normalize_sage_string(s):
+    """Привести SAGE-строку (displayName/description) к канону движка:
+    экранирование байтов только через '_XX_'; '*XX*' -> '_XX_'.
+
+    Кодировка строк — UTF-16LE: ASCII-символ пишется как сам символ +
+    '_00', непечатные/служебные байты — как '_XX' + '_00'. Байт '$'
+    (0x24) в исходном MapCache.ini записан как '*24*', и игра не
+    распознавала ссылку на CSF-ключ имени карты."""
+    return _STAR_ESCAPE.sub(r"_\1_", s)
+
+
+def decode_sage_string(s):
+    """Декодировать SAGE-строку ('_XX_00M_00a_00...') в обычный текст.
+
+    Токены '_XX' дают байт XX, голый ASCII-символ — свой байт; младший
+    байт каждого UTF-16 code unit формируется так, старший — '_00'."""
+    out = bytearray()
+    for tok in re.split(r"(_[0-9A-Fa-f]{2})", s):
+        if not tok:
+            continue
+        if tok.startswith("_") and len(tok) == 3:
+            out.append(int(tok[1:], 16))
+        else:
+            out.extend(tok.encode("latin-1"))
+    return out.decode("utf-16-le", errors="replace")
+
+
 def fix_block(block):
-    """Вернуть (folder_name, ini_text) для блока, с исправленным ключом и
-    isOfficial = yes. Пустые строки внутри блока выбрасываем (как в
-    настоящем MapCache.ini игры)."""
+    """Вернуть (folder_name, ini_text) для блока, с исправленным ключом,
+    isOfficial = yes и нормализованным displayName. Пустые строки внутри
+    блока выбрасываем (как в настоящем MapCache.ini игры)."""
     fixed = []
     folder = None
     for line in block:
         if not line.strip():
             continue  # пустые строки внутри блока не нужны
         stripped = line.lstrip()
+        indent = line[:len(line) - len(stripped)]
         if stripped.startswith("MapCache "):
             key = stripped.split(None, 1)[1].strip()
             # Оставляем только часть, начиная с maps_5C:
@@ -85,6 +119,9 @@ def fix_block(block):
             fixed.append(f"MapCache {new_key}")
         elif stripped.startswith("isOfficial"):
             fixed.append("  isOfficial = yes")
+        elif stripped.startswith("displayName"):
+            field, _, value = stripped.partition(" = ")
+            fixed.append(f"{indent}{field} = {normalize_sage_string(value)}")
         else:
             fixed.append(line.rstrip("\r\n"))
     ini = "\n".join(fixed).rstrip() + "\n"
@@ -146,6 +183,17 @@ def validate(folder, big_path):
         errs.append("в ini не ровно один корректный блок")
     if len(re.findall(r"Player_\d_Start", payload)) != 8:
         errs.append("не 8 стартовых позиций")
+    if "*" in payload:
+        errs.append("остались '*XX*'-экранирования (должно быть '_XX_')")
+    # displayName должен декодироваться в ссылку на CSF-ключ $Map:<map>
+    m = re.search(r"^\s*displayName\s*=\s*(.+?)\s*$", payload, re.M)
+    if not m:
+        errs.append("нет displayName")
+    else:
+        name = decode_sage_string(m.group(1))
+        expect = "$Map:" + folder.replace(" ", "").lower()
+        if name != expect:
+            errs.append(f"displayName декодируется в {name!r}, ожидалось {expect!r}")
     return errs
 
 
