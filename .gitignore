@@ -19,3 +19,6 @@ config/menu_marker.json
 config/match_result.json
 config/match_debug/
 .venv/
+
+# Временная папка: генерация __wotr_maps_cache.big по картам
+_wotr_mapcache_build/
